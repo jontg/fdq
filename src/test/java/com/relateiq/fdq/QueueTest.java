@@ -4,6 +4,8 @@ import com.foundationdb.Database;
 import com.foundationdb.FDB;
 import org.junit.Test;
 
+import java.util.stream.IntStream;
+
 public class QueueTest {
 
     @Test
@@ -14,12 +16,10 @@ public class QueueTest {
 
         Queue q = new Queue(db);
 
-        new Thread(() -> q.tail("asdf")).start();
-        new Thread(() -> q.tail("asdf")).start();
+        new Thread(() -> q.tail("asdf", e -> System.out.println("a " + e.shardKey + " " + new String(e.message)))).start();
+        new Thread(() -> q.tail("asdf", e -> System.out.println("b " + e.shardKey + " " + new String(e.message)))).start();
 
-        for (int i = 0; i < 100; i++) {
-            q.enqueue("asdf", "qwerty " + i);
-        }
+        IntStream.range(0, 100).forEach(i -> q.enqueue("asdf", "" + i, ("qwerty " + i).getBytes()));
 
         Thread.sleep(1000);
 

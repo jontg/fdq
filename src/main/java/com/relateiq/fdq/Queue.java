@@ -15,6 +15,7 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.function.Consumer;
 
 /**
  * Created by mbessler on 2/6/15.
@@ -35,11 +36,11 @@ public class Queue {
         return bb.array();
     }
 
-    public void enqueue(final String topic, final String value) {
+    public void enqueue(final String topic, final String shardKey, final byte[] value) {
         db.run(new Function<Transaction, Void>() {
             @Override
             public Void apply(Transaction tr) {
-                tr.set(Tuple.from(topic, "q", System.nanoTime(), random.nextInt()).pack(), Tuple.from(value).pack());
+                tr.set(Tuple.from(topic, "q", System.nanoTime(), random.nextInt()).pack(), Tuple.from(shardKey, value).pack());
                 tr.mutate(MutationType.ADD, topicWatchKey(topic), intToByteArray(1));
                 return null;
             }
@@ -50,42 +51,49 @@ public class Queue {
         return Tuple.from(topic, "inserted").pack();
     }
 
-    public void tail(final String topic) {
+    public void tail(final String topic, Consumer<Envelope> consumer) {
 
         while (true) {
-            tailWork(topic);
+            tailWork(topic, consumer);
         }
 
     }
 
-    private void tailWork(String topic) {
-        System.out.println("watching...");
+
+    private void tailWork(String topic, Consumer<Envelope> consumer) {
+
+//        System.out.println("watching...");
+
         Future<Void> watch = db.run((Function<Transaction, Future<Void>>) tr -> tr.watch(topicWatchKey(topic)));
         watch.map((Function<Void, Void>) aVoid -> {
-            System.out.println("hit");
+//            System.out.println("hit");
             return null;
         });
 
         watch.get();
 
-        List<String> fetched = db.run((Function<Transaction, List<String>>) tr -> {
-            List<String> result = new ArrayList<>();
+        List<Envelope> fetched = db.run((Function<Transaction, List<Envelope>>) tr -> {
+            List<Envelope> result = new ArrayList<>();
             for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(Tuple.from(topic, "q").pack()))) {
-                Tuple key = Tuple.fromBytes(keyValue.getKey());
-//                System.out.println("kv: " + key.getLong(2) + " " + key.getLong(3) + " : " + new String(keyValue.getValue()));
-                long nanos = key.getLong(2);
                 tr.addReadConflictKey(keyValue.getKey());
                 tr.clear(keyValue.getKey());
-                result.add(((System.nanoTime() - nanos) / 1000000) + " " + new String(keyValue.getValue()));
+
+                Tuple key = Tuple.fromBytes(keyValue.getKey());
+                Tuple value = Tuple.fromBytes(keyValue.getValue());
+//                System.out.println("kv: " + key.getLong(2) + " " + key.getLong(3) + " : " + new String(keyValue.getValue()));
+
+                long insertionTime = key.getLong(2);
+                String shardKey = value.getString(0);
+                byte[] message = value.getBytes(1);
+                result.add(new Envelope(insertionTime, shardKey , message));
             }
+
             return result;
         });
 
-        for (String s : fetched) {
-            System.out.println(s);
+        for (Envelope envelope : fetched) {
+            consumer.accept(envelope);
         }
-
-        System.out.println("done watching...");
     }
 
 
