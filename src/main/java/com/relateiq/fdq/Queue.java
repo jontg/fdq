@@ -5,21 +5,25 @@ import com.foundationdb.KeyValue;
 import com.foundationdb.MutationType;
 import com.foundationdb.Range;
 import com.foundationdb.Transaction;
-import com.foundationdb.async.AsyncIterable;
 import com.foundationdb.async.Function;
 import com.foundationdb.async.Future;
-import com.foundationdb.directory.Directory;
 import com.foundationdb.directory.DirectoryLayer;
 import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
+import com.google.common.hash.HashCode;
+import com.google.common.hash.HashFunction;
+import com.google.common.hash.Hashing;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 /**
@@ -27,9 +31,11 @@ import java.util.function.Consumer;
  */
 public class Queue {
 
+    public static final Charset CHARSET = Charset.forName("UTF-8");
     private final Database db;
     private final Random random = new Random();
     private final ConcurrentHashMap<List<String>, DirectorySubspace> directories = new ConcurrentHashMap<>();
+    private static final HashFunction hashFunction = Hashing.goodFastHash(32);
 
     public Queue(Database db) {
         this.db = db;
@@ -44,8 +50,11 @@ public class Queue {
 
     public void enqueue(final String topic, final String shardKey, final byte[] value) {
 
-        DirectorySubspace dataDir = getDirectory(topic, "data");
-        byte[] topicWatchKey = getTopicWatchKey(topic);
+        HashCode hash = hashFunction.hashString(shardKey, CHARSET);
+        String partitionIndex = "" + Math.abs(hash.asInt()) % 32;
+
+        DirectorySubspace dataDir = getCachedDirectory(Arrays.asList(topic, "data", partitionIndex));
+        byte[] topicWatchKey = getTopicWatchKey(topic, partitionIndex);
 
         db.run((Function<Transaction, Void>) tr -> {
             tr.set(dataDir.pack(Tuple.from(System.nanoTime(), random.nextInt())), Tuple.from(shardKey, value).pack());
@@ -54,12 +63,12 @@ public class Queue {
         });
     }
 
-    private byte[] getTopicWatchKey(String topic) {
-        return getDirectory(topic, "metrics").pack(Tuple.from("inserted"));
+    private byte[] getTopicWatchKey(String topic, String partitionIndex) {
+        return getCachedDirectory(Arrays.asList(topic, "metrics", partitionIndex)).pack(Tuple.from("inserted"));
     }
 
-    private DirectorySubspace getDirectory(String topic, String subdir) {
-        List<String> key = Arrays.asList(topic, subdir);
+    private DirectorySubspace getCachedDirectory(List<String> strings) {
+        List<String> key = strings;
         DirectorySubspace result = directories.get(key);
         if (result != null) {
             return result;
@@ -72,18 +81,29 @@ public class Queue {
 
 
     public void tail(final String topic, Consumer<Envelope> consumer) {
-        DirectorySubspace dataDir = getDirectory(topic, "data");
-        byte[] topicWatchKey = getTopicWatchKey(topic);
 
-        while (true) {
-            tailWork(topic, dataDir, topicWatchKey, consumer);
+        ExecutorService executor = Executors.newFixedThreadPool(10);
+
+        // ensure tailers for each of our partitions
+        for (int i = 0; i < 32; i++) {
+            final int finalI = i;
+            new Thread(() -> tailPartition(topic, "" + finalI, executor, consumer)).start();
         }
+    }
 
+    public void tailPartition(final String topic, final String partitionIndex, ExecutorService executor, Consumer<Envelope> consumer) {
+        DirectorySubspace dataDir = getCachedDirectory(Arrays.asList(topic, "data", partitionIndex));
+        byte[] topicWatchKey = getTopicWatchKey(topic, partitionIndex);
+
+        while (tailWork(dataDir, topicWatchKey, executor, consumer)) {
+
+        }
     }
 
 
-    private void tailWork(String topic, DirectorySubspace dataDir, byte[] topicWatchKey, Consumer<Envelope> consumer) {
-
+    private boolean tailWork(DirectorySubspace dataDir, byte[] topicWatchKey, ExecutorService executor, Consumer<Envelope> consumer) {
+        // ensure we still have this token, otherwise return false to stop tailing this token
+        
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
         Future<Void> watch = db.run((Function<Transaction, Future<Void>>) tr -> tr.watch(topicWatchKey));
@@ -121,8 +141,10 @@ public class Queue {
         });
 
         for (Envelope envelope : fetched) {
-            consumer.accept(envelope);
+            executor.submit(() -> consumer.accept(envelope));
         }
+
+        return true;
     }
 
 
