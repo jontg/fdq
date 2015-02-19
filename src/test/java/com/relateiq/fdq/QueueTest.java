@@ -4,8 +4,10 @@ import com.foundationdb.Database;
 import com.foundationdb.FDB;
 import com.foundationdb.Transaction;
 import com.foundationdb.async.Function;
+import com.google.common.collect.ConcurrentHashMultiset;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
+import com.google.common.collect.Multiset;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -20,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.stream.IntStream;
 
+import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toSet;
 import static org.junit.Assert.assertEquals;
 
@@ -50,19 +54,39 @@ public class QueueTest {
         Queue q = new Queue(db);
         q.clearAssignments(TOPIC);
 
-        Set<String> rcvd = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        Multiset<String> rcvd = ConcurrentHashMultiset.create();
 
+        log.debug("creating consumers");
         new Thread(() -> q.tail(TOPIC, "a", e -> rcvd.add(new String(e.message)))).start();
         new Thread(() -> q.tail(TOPIC, "b", e -> rcvd.add(new String(e.message)))).start();
         new Thread(() -> q.tail(TOPIC, "c", e -> rcvd.add(new String(e.message)))).start();
 
-
+        log.debug("adding serially");
+        long start = System.currentTimeMillis();
         IntStream.range(0, 100).forEach(i -> q.enqueue(TOPIC, "" + i, ("qwerty " + i).getBytes()));
+        log.debug("adding serially took " + (System.currentTimeMillis() - start));
 
-        // flaky, better to block somehow on rcv
-        Thread.sleep(1500);
+        log.debug("adding batch");
+        start = System.currentTimeMillis();
+        List<MessageRequest> reqs = IntStream.range(0, 100).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
+        q.enqueueBatch(TOPIC, reqs);
+        log.debug("adding batch took " + (System.currentTimeMillis() - start));
 
-        assertEquals(100, rcvd.size());
+        log.debug("waiting for messages");
+        start = System.currentTimeMillis();
+        while (true) {
+            if (rcvd.size() == 200) {
+                break;
+            }
+            Thread.sleep(10);
+            if ((System.currentTimeMillis() - start) > 1500) {
+                log.debug("timed out waiting");
+                break;
+            }
+        }
+        log.debug("took " + (System.currentTimeMillis() - start));
+
+        assertEquals(200, rcvd.size());
 
         q.nukeTopic(TOPIC);
 

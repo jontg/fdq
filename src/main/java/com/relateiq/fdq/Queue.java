@@ -14,8 +14,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
-import com.google.common.hash.HashFunction;
-import com.google.common.hash.Hashing;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,19 +52,25 @@ public class Queue {
     }
 
     public void enqueue(final String topic, final String shardKey, final byte[] message) {
-        Integer shardIndex = Helpers.modHash(shardKey, NUM_TOKENS, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
+        enqueueBatch(topic, ImmutableList.of(new MessageRequest(shardKey, message)));
+    }
 
-        DirectorySubspace dataDir = getCachedDirectory(Arrays.asList(topic, "data", "" + shardIndex));
-        byte[] topicWatchKey = getTopicShardWatchKey(topic, shardIndex);
-
-        if (log.isTraceEnabled()) {
-            log.trace("enqueuing topic=" + topic + " shardKey=" + shardKey + " shardIndex=" + shardIndex);
-        }
-
+    public void enqueueBatch(final String topic, final Collection<MessageRequest> messageRequests) {
         db.run((Function<Transaction, Void>) tr -> {
-            // TODO: ensure monotonic
-            tr.set(dataDir.pack(Tuple.from(System.currentTimeMillis(), random.nextInt())), Tuple.from(shardKey, message).pack());
-            tr.mutate(MutationType.ADD, topicWatchKey, ONE);
+            for (MessageRequest messageRequest : messageRequests) {
+                Integer shardIndex = Helpers.modHash(messageRequest.shardKey, NUM_TOKENS, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
+
+                DirectorySubspace dataDir = getCachedDirectory(Arrays.asList(topic, "data", "" + shardIndex));
+                byte[] topicWatchKey = getTopicShardWatchKey(topic, shardIndex);
+
+                // TODO: ensure monotonic
+                if (log.isTraceEnabled()) {
+                    log.trace("enqueuing topic=" + topic + " shardKey=" + messageRequest.shardKey + " shardIndex=" + shardIndex);
+                }
+
+                tr.set(dataDir.pack(Tuple.from(System.currentTimeMillis(), random.nextInt())), Tuple.from(messageRequest.shardKey, messageRequest.message).pack());
+                tr.mutate(MutationType.ADD, topicWatchKey, ONE);
+            }
             return null;
         });
     }
@@ -241,7 +245,8 @@ public class Queue {
 
                     String shardKey = value.getString(0);
                     byte[] message = value.getBytes(1);
-                    result.add(new Envelope(insertionTime, shardKey, message));
+                    int executorIndex = Helpers.modHash(shardKey, NUM_EXECUTORS, MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
+                    result.add(new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message));
                 } catch (Exception e){
                     // issue with deserialization
                     log.warn("error popping", e);
@@ -252,11 +257,11 @@ public class Queue {
         });
 
         for (Envelope envelope : fetched) {
-            int executorIndex = Helpers.modHash(envelope.shardKey, NUM_EXECUTORS, MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
+
             if (log.isTraceEnabled()) {
-                log.trace("Submitting to executor topic=" + topic + " shardKey=" + envelope.shardKey + " executorIndex=" + executorIndex);
+                log.trace("Submitting to executor topic=" + topic + " " + envelope.toString());
             }
-            executors.get(executorIndex).submit(() -> consumerWrapper(consumer, envelope));
+            executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumer, envelope));
         }
 
         return true;
