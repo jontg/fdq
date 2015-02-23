@@ -21,9 +21,20 @@ public class Divvy {
     public static final Logger log = LoggerFactory.getLogger(Divvy.class);
 
 
+    /**
+     *
+     * This method will add a consumer and take a some tokens from each existing consumer to try and keep the tokens
+     * evenly distributed and re-assigning as few as possible.
+     *
+     * @param currentAssignments
+     * @param newConsumerId
+     * @param desiredTokenCount
+     * @return
+     */
     public static Multimap<String, Integer> addConsumer(Multimap<String, Integer> currentAssignments, String newConsumerId, int desiredTokenCount) {
         currentAssignments = ImmutableMultimap.copyOf(currentAssignments);
 
+        // dont do anything if no changes
         int currentTokenCount = currentAssignments.asMap().values().stream().mapToInt(x -> x.size()).sum();
         if (currentAssignments.containsKey(newConsumerId) && currentTokenCount == desiredTokenCount) {
             return currentAssignments;
@@ -31,11 +42,13 @@ public class Divvy {
 
         ImmutableMultimap.Builder<String, Integer> builder = ImmutableMultimap.builder();
 
+
         if (currentTokenCount != desiredTokenCount ){
             if (currentTokenCount != 0) {
-                // nuke em all!
+                // we dont yet handle the case where the # of tokens is neither 0 nor the desired count
                 throw new NotImplementedException();
             } else {
+                // if the token counts don't match we currently assume its the init case and there are no tokens yet, so just assign all to new consumer
                 for (int i = 0; i < desiredTokenCount; i++) {
                     builder.put(newConsumerId, i);
                 }
@@ -43,8 +56,8 @@ public class Divvy {
             }
         }
 
+        // figure out how/where to grab them from
         int currentConsumerCount = currentAssignments.keySet().size();
-
         int minTokens = desiredTokenCount / (currentConsumerCount + 1);
         int numToTakeFromEach = currentConsumerCount == 0 ? 0 : minTokens / currentConsumerCount;
         int remainder = currentConsumerCount == 0 ? 0 : minTokens % currentConsumerCount;

@@ -36,12 +36,12 @@ public class QueueTest {
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
 
-        Queue q = new Queue(db);
+        Consumer c = new Consumer(db);
 
         Multimap<String, Integer> assignments = HashMultimap.create();
         assignments.putAll("a", IntStream.range(0, 32).mapToObj(x -> x).collect(toSet()));
-        db.run((Function<Transaction, Void>)tr -> {q.saveAssignments(tr, TOPIC,  assignments);
-            log.debug(q.fetchAssignments(tr, TOPIC).toString());
+        db.run((Function<Transaction, Void>)tr -> {c.saveAssignments(tr, TOPIC, assignments);
+            log.debug(c.fetchAssignments(tr, TOPIC).toString());
             return null;});
     }
 
@@ -51,25 +51,26 @@ public class QueueTest {
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
 
-        Queue q = new Queue(db);
-        q.clearAssignments(TOPIC);
+        Producer p = new Producer(db);
+        Consumer c = new Consumer(db);
+        c.nukeTopic(TOPIC);
 
         Multiset<String> rcvd = ConcurrentHashMultiset.create();
 
         log.debug("creating consumers");
-        new Thread(() -> q.tail(TOPIC, "a", e -> rcvd.add(new String(e.message)))).start();
-        new Thread(() -> q.tail(TOPIC, "b", e -> rcvd.add(new String(e.message)))).start();
-        new Thread(() -> q.tail(TOPIC, "c", e -> rcvd.add(new String(e.message)))).start();
+        new Thread(() -> c.tail(TOPIC, "a", e -> rcvd.add(new String(e.message)))).start();
+        new Thread(() -> c.tail(TOPIC, "b", e -> rcvd.add(new String(e.message)))).start();
+        new Thread(() -> c.tail(TOPIC, "c", e -> rcvd.add(new String(e.message)))).start();
 
         log.debug("adding serially");
         long start = System.currentTimeMillis();
-        IntStream.range(0, 100).forEach(i -> q.enqueue(TOPIC, "" + i, ("qwerty " + i).getBytes()));
+        IntStream.range(0, 100).forEach(i -> p.enqueue(TOPIC, "" + i, ("qwerty " + i).getBytes()));
         log.debug("adding serially took " + (System.currentTimeMillis() - start));
 
         log.debug("adding batch");
         start = System.currentTimeMillis();
         List<MessageRequest> reqs = IntStream.range(0, 100).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
-        q.enqueueBatch(TOPIC, reqs);
+        p.enqueueBatch(TOPIC, reqs);
         log.debug("adding batch took " + (System.currentTimeMillis() - start));
 
         log.debug("waiting for messages");
@@ -84,11 +85,11 @@ public class QueueTest {
                 break;
             }
         }
-        log.debug("took " + (System.currentTimeMillis() - start));
+        log.debug("waiting for messages took " + (System.currentTimeMillis() - start));
 
         assertEquals(200, rcvd.size());
 
-        q.nukeTopic(TOPIC);
+        c.nukeTopic(TOPIC);
 
 
 //        db.run(new Function<Transaction, Void>() {
