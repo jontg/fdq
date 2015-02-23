@@ -1,5 +1,6 @@
 package com.relateiq.fdq;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -86,6 +87,65 @@ public class Divvy {
         }
 
         builder.putAll(newConsumerId, newConsumerTokens);
+
+        ImmutableMultimap<String, Integer> result = builder.build();
+        int newTokenCount = result.asMap().values().stream().mapToInt(x -> x.size()).sum();
+
+        assert newTokenCount == desiredTokenCount;
+
+        return result;
+    }
+
+
+    /**
+     * @param currentAssignments
+     * @param removedConsumerId
+     * @param desiredTokenCount
+     * @return
+     */
+    public static Multimap<String, Integer> removeConsumer(Multimap<String, Integer> currentAssignments, String removedConsumerId, int desiredTokenCount) {
+        currentAssignments = ImmutableMultimap.copyOf(currentAssignments);
+
+        // dont do anything if no changes
+        int currentTokenCount = currentAssignments.asMap().values().stream().mapToInt(x -> x.size()).sum();
+        if (!currentAssignments.containsKey(removedConsumerId)) {
+            return currentAssignments;
+        }
+
+        ImmutableMultimap.Builder<String, Integer> builder = ImmutableMultimap.builder();
+
+        if (currentTokenCount != desiredTokenCount) {
+            // we dont yet handle the case where the # of tokens is wrong
+            throw new NotImplementedException();
+        }
+
+        // redistribute tokens
+
+        ImmutableList.Builder<String> remainingConsumerBuilder = ImmutableList.builder();
+        // everyone but removed keeps their tokens
+        for (Map.Entry<String, Collection<Integer>> entry : currentAssignments.asMap().entrySet().stream()
+                .filter(e -> !removedConsumerId.equals(e.getKey()))
+                .sorted((e1, e2) -> e1.getKey().compareTo(e2.getKey()))
+                .collect(toList())) {
+
+            remainingConsumerBuilder.add(entry.getKey());
+            builder.putAll(entry.getKey(), entry.getValue());
+        }
+        ImmutableList<String> remainingConsumers = remainingConsumerBuilder.build();
+
+        if (remainingConsumers.isEmpty()){
+            return builder.build();
+        }
+
+
+        Collection<Integer> tokensToDistribute = currentAssignments.get(removedConsumerId);
+        // hand out each token from removed consumer
+        int i = 0;
+        for (Integer token : tokensToDistribute) {
+            String consumerName = remainingConsumers.get(i % remainingConsumers.size());
+            builder.put(consumerName, token);
+            i++;
+        }
 
         ImmutableMultimap<String, Integer> result = builder.build();
         int newTokenCount = result.asMap().values().stream().mapToInt(x -> x.size()).sum();
