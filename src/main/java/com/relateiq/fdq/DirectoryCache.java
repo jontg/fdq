@@ -5,8 +5,6 @@ import com.foundationdb.directory.DirectoryLayer;
 import com.foundationdb.directory.DirectorySubspace;
 
 import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Created by mbessler on 2/19/15.
@@ -18,16 +16,13 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class DirectoryCache {
 
-    private static final ConcurrentHashMap<List<String>, DirectorySubspace> directories = new ConcurrentHashMap<>();
+    public static final DirectoryLayer DIRECTORY_LAYER = DirectoryLayer.getDefault();
 
-    public static DirectorySubspace directory(Transaction tr, String... strings) {
-        List<String> key = Arrays.asList(strings);
-        DirectorySubspace result = directories.get(key);
-        if (result != null) {
-            return result;
-        }
-        result = DirectoryLayer.getDefault().createOrOpen(tr, key).get();
-        directories.putIfAbsent(key, result);
-        return result;
+    public static DirectorySubspace mkdirp(Transaction tr, String... strings) {
+        return DIRECTORY_LAYER.createOrOpen(tr, Arrays.asList(strings)).get();
+    }
+
+    public static void rmdir(Transaction tr, String... strings) {
+        DIRECTORY_LAYER.removeIfExists(tr, Arrays.asList(strings)).get();
     }
 }

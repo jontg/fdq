@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collection;
 import java.util.Random;
 
-import static com.relateiq.fdq.DirectoryCache.directory;
+import static com.relateiq.fdq.DirectoryCache.mkdirp;
 import static com.relateiq.fdq.Helpers.*;
 
 /**
@@ -52,8 +52,8 @@ public class Producer {
             for (MessageRequest messageRequest : messageRequests) {
                 Integer shardIndex = modHash(messageRequest.shardKey, NUM_SHARDS, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
 
-                DirectorySubspace dataDir = directory(tr, getTopicShardDataPath(topic, shardIndex));
-                byte[] topicWatchKey = getTopicShardWatchKey(tr, topic, shardIndex);
+                DirectorySubspace dataDir = mkdirp(tr, getTopicShardDataPath(topic, shardIndex));
+                byte[] topicWatchKey = mkdirp(tr, getTopicShardMetricPath(topic, shardIndex)).pack("inserted");
 
                 // TODO: ensure monotonic
                 if (log.isTraceEnabled()) {

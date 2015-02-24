@@ -8,7 +8,6 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import java.util.Collection;
 import java.util.Map;
@@ -47,7 +46,7 @@ public class Divvy {
         if (currentTokenCount != desiredTokenCount ){
             if (currentTokenCount != 0) {
                 // we dont yet handle the case where the # of tokens is neither 0 nor the desired count
-                throw new NotImplementedException();
+                throw new RuntimeException("not implemented");
             } else {
                 // if the token counts don't match we currently assume its the init case and there are no tokens yet, so just assign all to new consumer
                 for (int i = 0; i < desiredTokenCount; i++) {
@@ -116,7 +115,7 @@ public class Divvy {
 
         if (currentTokenCount != desiredTokenCount) {
             // we dont yet handle the case where the # of tokens is wrong
-            throw new NotImplementedException();
+            throw new RuntimeException("not implemented");
         }
 
         // redistribute tokens

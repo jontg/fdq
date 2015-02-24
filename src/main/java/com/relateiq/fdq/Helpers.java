@@ -1,7 +1,5 @@
 package com.relateiq.fdq;
 
-import com.foundationdb.Transaction;
-import com.foundationdb.tuple.Tuple;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
@@ -10,7 +8,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 
-import static com.relateiq.fdq.DirectoryCache.directory;
 
 /**
  * Created by mbessler on 2/19/15.
@@ -25,6 +22,7 @@ public class Helpers {
     public static final String DIR_METRICS = "metrics";
     public static final String DIR_CONFIG = "config";
     public static final String DIR_ASSIGNMENTS = "assignments";
+    public static final String DIR_HEARTBEATS = "heartbeats";
 
     public static final int NUM_SHARDS = 24;  // todo: make this configurable
 
@@ -51,19 +49,24 @@ public class Helpers {
         return new String[]{topic, "data", "" + shardIndex};
     }
 
-    public static byte[] getTopicShardWatchKey(Transaction tr, String topic, Integer shardIndex) {
-        return directory(tr, topic, DIR_METRICS, "" + shardIndex).pack(Tuple.from("inserted"));
+    public static String[] getTopicShardMetricPath(String topic, Integer shardIndex) {
+        return new String[]{topic, DIR_METRICS, "" + shardIndex};
     }
 
     public static String[] getTopicAssignmentPath(String topic) {
         return new String[]{topic, DIR_CONFIG, DIR_ASSIGNMENTS};
     }
 
-    public static byte[] getTopicAssignmentsKey(Transaction tr, String topic, Integer shardIndex) {
-        return directory(tr, getTopicAssignmentPath(topic)).pack(shardIndex);
+    public static String[] getTopicHeartbeatPath(String topic) {
+        return new String[]{topic, DIR_CONFIG, DIR_HEARTBEATS};
     }
 
-    public static String[] getShardDataPath(String topic, Integer shardIndex) {
-        return new String[]{topic, "data", "" + shardIndex};
+    public static byte[] currentTimeMillisAsBytes() {
+        return ByteBuffer.allocate(8).putLong(System.currentTimeMillis()).array();
     }
+
+    public static long bytesToMillis(byte[] in) {
+        return ByteBuffer.wrap(in).getLong();
+    }
+
 }

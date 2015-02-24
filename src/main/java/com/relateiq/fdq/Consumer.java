@@ -20,14 +20,16 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import static com.relateiq.fdq.DirectoryCache.directory;
+import static com.relateiq.fdq.DirectoryCache.mkdirp;
+import static com.relateiq.fdq.DirectoryCache.rmdir;
+import static com.relateiq.fdq.Helpers.NUM_SHARDS;
+import static com.relateiq.fdq.Helpers.bytesToMillis;
+import static com.relateiq.fdq.Helpers.currentTimeMillisAsBytes;
 import static com.relateiq.fdq.Helpers.getTopicAssignmentPath;
-import static com.relateiq.fdq.Helpers.getTopicAssignmentsKey;
-import static com.relateiq.fdq.Helpers.getTopicShardWatchKey;
+import static com.relateiq.fdq.Helpers.getTopicHeartbeatPath;
 
 /**
  * Created by mbessler on 2/6/15.
@@ -45,15 +47,14 @@ public class Consumer {
     /**
      *
      * @param tr the transaction
-     * @param topic the topic to fetch assignments for
+     * @param topicAssignmentDirectory
      * @return the assignments, a multimap of shardIndexes indexed by consumerName
      */
-    Multimap<String, Integer> fetchAssignments(Transaction tr, String topic) {
+    Multimap<String, Integer> fetchAssignments(Transaction tr, DirectorySubspace topicAssignmentDirectory) {
         ImmutableMultimap.Builder<String, Integer> builder = ImmutableMultimap.builder();
 
-        DirectorySubspace directory = directory(tr, getTopicAssignmentPath(topic));
-        for (KeyValue keyValue : tr.getRange(Range.startsWith(directory.pack()))) {
-            Integer shardIndex = (int) directory.unpack(keyValue.getKey()).getLong(0);
+        for (KeyValue keyValue : tr.getRange(Range.startsWith(topicAssignmentDirectory.pack()))) {
+            Integer shardIndex = (int) topicAssignmentDirectory.unpack(keyValue.getKey()).getLong(0);
             String consumerName = new String(keyValue.getValue(), Helpers.CHARSET);
             builder.put(consumerName, shardIndex);
         }
@@ -64,52 +65,107 @@ public class Consumer {
     /**
      *
      * @param tr the transaction
-     * @param topic the topic to fetch an assignment for
+     * @param directories
      * @param shardIndex the
      * @return
      */
-    private Optional<String> fetchAssignment(Transaction tr, String topic, Integer shardIndex) {
-        byte[] bytes = tr.get(getTopicAssignmentsKey(tr, topic, shardIndex)).get();
+    private Optional<String> fetchAssignment(Transaction tr, TopicDirectories directories, Integer shardIndex) {
+        byte[] bytes = tr.get(directories.getTopicAssignmentsKey(shardIndex)).get();
         if (bytes == null) {
             return Optional.empty();
         }
         return Optional.of(new String(bytes, Helpers.CHARSET));
     }
 
-    void saveAssignments(Transaction tr, String topic, Multimap<String, Integer> assignments) {
+    void saveAssignments(Transaction tr, TopicDirectories directories, Multimap<String, Integer> assignments) {
         for (Map.Entry<String, Collection<Integer>> entry : assignments.asMap().entrySet()) {
             for (Integer integer : entry.getValue()) {
-                tr.set(getTopicAssignmentsKey(tr, topic, integer), entry.getKey().getBytes(Helpers.CHARSET));
+                tr.set(directories.getTopicAssignmentsKey(integer), entry.getKey().getBytes(Helpers.CHARSET));
             }
         }
     }
 
-    public void tail(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
-        // because we want to ensure we dont execute 2 tuples with same shard key at same time we want N different single-worker executors
-        ImmutableMap.Builder<Integer, ExecutorService> executorsBuilder = ImmutableMap.builder();
-        for (int i = 0; i < Helpers.NUM_EXECUTORS; i++) {
-            executorsBuilder.put(i, Executors.newFixedThreadPool(1));
-        }
-        ImmutableMap<Integer, ExecutorService> executors = executorsBuilder.build();
+    public void consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
+        ImmutableMap<Integer, ExecutorService> executors = getExecutors(Helpers.NUM_EXECUTORS);
 
-        Collection<Integer> shards = addConsumer(topic, consumerName);
+        TopicDirectories directories = ensureDirectories(topic);
 
-        // ensure tailers for each of our shards
+        Collection<Integer> shards = addConsumer(topic, consumerName, directories);
+
+        // start heartbeat thread
+        new Thread(() -> {
+            while (true) {
+//                heartbeat(topic, consumerName);
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    log.info("heartbeat interrupted, closing consume topic=" + topic + " consumerName=" + consumerName);
+                    break;
+                }
+            }
+        });
+
+        // ensure consumeers for each of our shards
         for (Integer shard : shards) {
             final int finalI = shard;
             new Thread(() -> {
                 try {
-                    tailShard(topic, finalI, executors, consumer, consumerName);
+                    consumeShard(topic, finalI, executors, consumer, consumerName, directories);
                 } catch (Exception e){
-                    log.error("error tailing", e);
+                    log.error("error consuming", e);
                 }
+                log.debug("Shutting down consumer shard thread topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shard);
             }).start();
         }
     }
 
+
+    private TopicDirectories ensureDirectories(String topic) {
+        return db.run((Function<Transaction, TopicDirectories>) tr -> {
+            DirectorySubspace assignments = mkdirp(tr, getTopicAssignmentPath(topic));
+            DirectorySubspace heartbeats = mkdirp(tr, getTopicHeartbeatPath(topic));
+
+            ImmutableMap.Builder<Integer, DirectorySubspace> shardMetrics = ImmutableMap.builder();
+            ImmutableMap.Builder<Integer, DirectorySubspace> shardData = ImmutableMap.builder();
+            for (int i = 0; i < NUM_SHARDS; i++) {
+                shardMetrics.put(i, mkdirp(tr, Helpers.getTopicShardMetricPath(topic, i)));
+                shardData.put(i, mkdirp(tr, Helpers.getTopicShardDataPath(topic, i)));
+            }
+
+            return new TopicDirectories(assignments, heartbeats, shardMetrics.build(), shardData.build());
+        });
+    }
+
+    private ImmutableMap<Integer, ExecutorService> getExecutors(int numExecutors) {
+        // because we want to ensure we dont execute 2 tuples with same shard key at same time we want N different single-worker executors
+        ImmutableMap.Builder<Integer, ExecutorService> executorsBuilder = ImmutableMap.builder();
+        for (int i = 0; i < numExecutors; i++) {
+            executorsBuilder.put(i, Executors.newFixedThreadPool(1));
+        }
+        return executorsBuilder.build();
+    }
+
+    private void heartbeat(String topic, String consumerName, TopicDirectories directories) {
+        db.run((Function<Transaction, Void>) tr -> {
+            // look for dead consumers
+            DirectorySubspace directory = directories.heartbeats;
+            long now = System.currentTimeMillis();
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(directory.pack()))) {
+                String name = directory.unpack(keyValue.getValue()).getString(0);
+                long millis = bytesToMillis(keyValue.getValue());
+
+                if (now - millis > 5000) {
+                    removeConsumer(tr, topic, name, directories);
+                }
+            }
+            tr.set(directory.pack(consumerName), currentTimeMillisAsBytes());
+            return null;
+        });
+    }
+
     public void clearAssignments(String topic) {
         db.run((Function<Transaction, Void>) tr -> {
-            tr.clear(Range.startsWith(directory(tr, getTopicAssignmentPath(topic)).pack()));
+            rmdir(tr, getTopicAssignmentPath(topic));
             return null;
         });
     }
@@ -122,71 +178,73 @@ public class Consumer {
      * @param topic
      */
     public void nukeTopic(String topic) {
-
         db.run((Function<Transaction, Void>) tr -> {
-            tr.clear(Range.startsWith(directory(tr, topic).pack()));
+            rmdir(tr, topic);
             return null;
         });
     }
 
 
-    private Collection<Integer> addConsumer(String topic, String name) {
+    private Collection<Integer> addConsumer(String topic, String name, TopicDirectories directories) {
 
         return db.run((Function<Transaction, Collection<Integer>>) tr -> {
             // fetch currentAssignments from fdb
-            Multimap<String, Integer> assignments = fetchAssignments(tr, topic);
+            Multimap<String, Integer> assignments = fetchAssignments(tr, directories.assignments);
+            log.debug("Assignments updating, currently name=" + name + " assignments=" + assignments);
 
             // add this consumer
             assignments = Divvy.addConsumer(assignments, name, Helpers.NUM_SHARDS);
-            log.debug("Assignments updated: " + assignments);
+            log.debug("Assignments updated, added name=" + name + " assignments=" + assignments);
 
             // save currentAssignments
-            saveAssignments(tr, topic, assignments);
+            saveAssignments(tr, directories, assignments);
             return assignments.get(name);
         });
 
     }
 
-    private Collection<Integer> removeConsumer(String topic, String name) {
+    private Collection<Integer> removeConsumer(String topic, String name, TopicDirectories directories) {
 
-        return db.run((Function<Transaction, Collection<Integer>>) tr -> {
-            // fetch currentAssignments from fdb
-            Multimap<String, Integer> assignments = fetchAssignments(tr, topic);
-
-            // add this consumer
-            assignments = Divvy.addConsumer(assignments, name, Helpers.NUM_SHARDS);
-            log.debug("Assignments updated: " + assignments);
-
-            // save currentAssignments
-            saveAssignments(tr, topic, assignments);
-            return assignments.get(name);
-        });
+        return db.run((Function<Transaction, Collection<Integer>>) tr -> removeConsumer(tr, topic, name, directories));
 
     }
 
-    private void tailShard(final String topic, final Integer shardIndex, ImmutableMap<Integer, ExecutorService> executors, java.util.function.Consumer<Envelope> consumer, String consumerName) {
-        while (tailWork( executors, consumer, topic, consumerName, shardIndex)) {
+    private Collection<Integer> removeConsumer(Transaction tr, String topic, String name, TopicDirectories directories) {
+        // fetch currentAssignments from fdb
+        Multimap<String, Integer> assignments = fetchAssignments(tr, directories.assignments);
+
+        // add this consumer
+        assignments = Divvy.removeConsumer(assignments, name, Helpers.NUM_SHARDS);
+        log.debug("Assignments updated, removed name=" + name + " assignments=" + assignments);
+
+        // save currentAssignments
+        saveAssignments(tr, directories, assignments);
+        return assignments.get(name);
+    }
+
+    private void consumeShard(final String topic, final Integer shardIndex, ImmutableMap<Integer, ExecutorService> executors, java.util.function.Consumer<Envelope> consumer, String consumerName, TopicDirectories directories) {
+        while (consumeWork(executors, consumer, topic, consumerName, shardIndex, directories)) {
 
         }
     }
 
 
-    private boolean tailWork(ImmutableMap<Integer, ExecutorService> executors, java.util.function.Consumer<Envelope> consumer, String topic, String consumerName, Integer shardIndex) {
-        // ensure we still have this shard, otherwise return false to stop tailing this shard
+    private boolean consumeWork(ImmutableMap<Integer, ExecutorService> executors, java.util.function.Consumer<Envelope> consumer, String topic, String consumerName, Integer shardIndex, TopicDirectories directories) {
+        // ensure we still have this shard, otherwise return false to stop consuming this shard
 
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
         Optional<Future<Void>> watch = db.run((Function<Transaction, Optional<Future<Void>>>) tr -> {
             // try to read from queue first?
-            if (!isMine(topic, consumerName, shardIndex, tr)) {
+            if (!isMine(tr, directories, shardIndex, consumerName)) {
                 return Optional.empty();
             }
-            byte[] topicWatchKey = getTopicShardWatchKey(tr, topic, shardIndex);
+            byte[] topicWatchKey = directories.getTopicShardWatchKey(shardIndex);
             return Optional.of(tr.watch(topicWatchKey));
         });
 
         if (!watch.isPresent()) {
-            log.debug("Assignment changed, shutting down tail topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shardIndex);
+            log.debug("Assignment changed, shutting down consume topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shardIndex);
             return false;
         }
 //        watch.map((Function<Void, Void>) aVoid -> {
@@ -198,11 +256,11 @@ public class Consumer {
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
         List<Envelope> fetched = db.run((Function<Transaction, List<Envelope>>) tr -> {
             // make sure we dont read things that are no longer ours
-            if (!isMine(topic, consumerName, shardIndex, tr)) {
+            if (!isMine(tr, directories, shardIndex, consumerName)) {
                 return ImmutableList.of();
             }
 
-            DirectorySubspace dataDir = directory(tr, Helpers.getShardDataPath(topic, shardIndex));
+            DirectorySubspace dataDir = directories.shardData.get(shardIndex);
 
             List<Envelope> result = new ArrayList<>();
             for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()))) {
@@ -250,8 +308,8 @@ public class Consumer {
         }
     }
 
-    private boolean isMine(String topic, String consumerName, Integer shardIndex, Transaction tr) {
-        return fetchAssignment(tr, topic, shardIndex)
+    private boolean isMine(Transaction tr, TopicDirectories directories, Integer shardIndex, String consumerName) {
+        return fetchAssignment(tr, directories, shardIndex)
                 .filter(consumerName::equals).isPresent();
     }
 
