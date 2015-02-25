@@ -2,11 +2,7 @@ package com.relateiq.fdq;
 
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
-import com.foundationdb.Transaction;
-import com.foundationdb.async.Function;
 import com.google.common.collect.ConcurrentHashMultiset;
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimap;
 import com.google.common.collect.Multiset;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -16,9 +12,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.stream.IntStream;
 
-import static com.relateiq.fdq.Helpers.getTopicAssignmentPath;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toSet;
 import static org.junit.Assert.assertEquals;
 
 public class QueueTest {
@@ -62,13 +56,13 @@ public class QueueTest {
 
         log.debug("adding serially");
         long start = System.currentTimeMillis();
-        IntStream.range(0, 100).forEach(i -> p.enqueue(TOPIC, "" + i, ("qwerty " + i).getBytes()));
+        IntStream.range(0, 100).forEach(i -> p.produce(TOPIC, "" + i, ("qwerty " + i).getBytes()));
         log.debug("adding serially took " + (System.currentTimeMillis() - start));
 
         log.debug("adding batch");
         start = System.currentTimeMillis();
         List<MessageRequest> reqs = IntStream.range(0, 100).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
-        p.enqueueBatch(TOPIC, reqs);
+        p.produceBatch(TOPIC, reqs);
         log.debug("adding batch took " + (System.currentTimeMillis() - start));
 
         log.debug("waiting for messages");

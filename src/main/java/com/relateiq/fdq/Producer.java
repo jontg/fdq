@@ -42,8 +42,8 @@ public class Producer {
      * @param shardKey the key used to consistently route this message to the same executor/thread (via the same consumer)
      * @param message the actual message
      */
-    public void enqueue(final String topic, final String shardKey, final byte[] message) {
-        enqueueBatch(topic, ImmutableList.of(new MessageRequest(shardKey, message)));
+    public void produce(final String topic, final String shardKey, final byte[] message) {
+        produceBatch(topic, ImmutableList.of(new MessageRequest(shardKey, message)));
     }
 
     /**
@@ -52,7 +52,7 @@ public class Producer {
      * @param topic the unique identifier for the topic
      * @param messageRequests the shardKey/message pairs to add to this topic in batch
      */
-    public void enqueueBatch(final String topic, final Collection<MessageRequest> messageRequests) {
+    public void produceBatch(final String topic, final Collection<MessageRequest> messageRequests) {
         db.run((Function<Transaction, Void>) tr -> {
             for (MessageRequest messageRequest : messageRequests) {
                 Integer shardIndex = modHash(messageRequest.shardKey, NUM_SHARDS, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
@@ -62,7 +62,7 @@ public class Producer {
 
                 // TODO: ensure monotonic
                 if (log.isTraceEnabled()) {
-                    log.trace("enqueuing topic=" + topic + " shardKey=" + messageRequest.shardKey + " shardIndex=" + shardIndex);
+                    log.trace("producing topic=" + topic + " shardKey=" + messageRequest.shardKey + " shardIndex=" + shardIndex);
                 }
 
                 tr.set(dataDir.pack(Tuple.from(System.currentTimeMillis(), random.nextInt())), Tuple.from(messageRequest.shardKey, messageRequest.message).pack());

@@ -51,7 +51,7 @@ public class FDQ {
                 String[] parts = s.split(" ", 2);
                 String shardKey = parts[0];
                 String message = parts[1];
-                p.enqueue(TOPIC, shardKey, message.getBytes());
+                p.produce(TOPIC, shardKey, message.getBytes());
             }
         } catch (IOException e) {
             e.printStackTrace();
