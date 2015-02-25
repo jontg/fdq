@@ -1,27 +1,38 @@
 package com.relateiq.fdq;
 
-import com.foundationdb.Transaction;
 import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
+import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
 
 /**
  * Created by mbessler on 2/23/15.
  */
-public class TopicDirectories {
+public class ConsumerConfig {
+
+    public final java.util.function.Consumer<Envelope> consumer;
+    public final String topic;
+    public final String name;
 
     public final DirectorySubspace assignments;
     public final DirectorySubspace heartbeats;
     public final Map<Integer, DirectorySubspace> shardMetrics;
     public final Map<Integer, DirectorySubspace> shardData;
+    public final Map<Integer, ExecutorService> executors;
 
 
-    public TopicDirectories(DirectorySubspace assignments, DirectorySubspace heartbeats, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData) {
+    public ConsumerConfig(String topic, String name, Consumer<Envelope> consumer, DirectorySubspace assignments, DirectorySubspace heartbeats, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData, ImmutableMap<Integer, ExecutorService> executors) {
+        this.topic = topic;
+        this.name = name;
+        this.consumer = consumer;
         this.assignments = assignments;
         this.heartbeats = heartbeats;
         this.shardMetrics = shardMetrics;
         this.shardData = shardData;
+        this.executors = executors;
     }
 
     public byte[] getTopicShardWatchKey(Integer shardIndex) {

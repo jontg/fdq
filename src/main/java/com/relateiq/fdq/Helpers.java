@@ -23,6 +23,7 @@ public class Helpers {
     public static final String DIR_CONFIG = "config";
     public static final String DIR_ASSIGNMENTS = "assignments";
     public static final String DIR_HEARTBEATS = "heartbeats";
+    public static final String DIR_CONSUMERS = "consumers";
 
     public static final int NUM_SHARDS = 24;  // todo: make this configurable
 

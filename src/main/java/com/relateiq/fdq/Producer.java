@@ -14,7 +14,12 @@ import java.util.Collection;
 import java.util.Random;
 
 import static com.relateiq.fdq.DirectoryCache.mkdirp;
-import static com.relateiq.fdq.Helpers.*;
+import static com.relateiq.fdq.Helpers.MOD_HASH_ITERATIONS_QUEUE_SHARDING;
+import static com.relateiq.fdq.Helpers.NUM_SHARDS;
+import static com.relateiq.fdq.Helpers.ONE;
+import static com.relateiq.fdq.Helpers.getTopicShardDataPath;
+import static com.relateiq.fdq.Helpers.getTopicShardMetricPath;
+import static com.relateiq.fdq.Helpers.modHash;
 
 /**
  * Created by mbessler on 2/6/15.

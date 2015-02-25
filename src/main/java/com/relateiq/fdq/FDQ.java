@@ -6,6 +6,7 @@ import com.foundationdb.FDB;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.Random;
 import java.util.Scanner;
 
 /**
@@ -15,9 +16,25 @@ public class FDQ {
 
     public static void main(String[] args) {
 
-        if (args[0] == "produce") {
-            produce();
+        switch (args[0]) {
+            case "produce":
+                produce();
+                break;
+            case "consume":
+                consume();
+                break;
         }
+    }
+
+    private static void consume() {
+        String TOPIC = "testTopic";
+        FDB fdb = FDB.selectAPIVersion(300);
+        Database db = fdb.open();
+
+        Consumer c = new Consumer(db);
+
+        c.consume("testTopic", "" + (new Random()).nextLong(), e -> System.out.println(e.toString() + " " + new String(e.message)));
+
     }
 
     private static void produce() {
@@ -31,7 +48,7 @@ public class FDQ {
         try {
             BufferedReader b = new BufferedReader(new InputStreamReader(System.in));
             for(String s = null; (s = b.readLine()) != null;){
-                String[] parts = s.split(" ", 1);
+                String[] parts = s.split(" ", 2);
                 String shardKey = parts[0];
                 String message = parts[1];
                 p.enqueue(TOPIC, shardKey, message.getBytes());

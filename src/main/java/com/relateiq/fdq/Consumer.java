@@ -11,6 +11,7 @@ import com.foundationdb.tuple.Tuple;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +37,8 @@ import static com.relateiq.fdq.Helpers.getTopicHeartbeatPath;
  */
 public class Consumer {
     public static final Logger log = LoggerFactory.getLogger(Consumer.class);
+    private static final byte[] NULL = {0};
+    public static final int CONSUMER_TIMEOUT_MILLIS = 5000;
 
     private final Database db;
 
@@ -69,7 +72,7 @@ public class Consumer {
      * @param shardIndex the
      * @return
      */
-    private Optional<String> fetchAssignment(Transaction tr, TopicDirectories directories, Integer shardIndex) {
+    private Optional<String> fetchAssignment(Transaction tr, ConsumerConfig directories, Integer shardIndex) {
         byte[] bytes = tr.get(directories.getTopicAssignmentsKey(shardIndex)).get();
         if (bytes == null) {
             return Optional.empty();
@@ -77,7 +80,7 @@ public class Consumer {
         return Optional.of(new String(bytes, Helpers.CHARSET));
     }
 
-    void saveAssignments(Transaction tr, TopicDirectories directories, Multimap<String, Integer> assignments) {
+    void saveAssignments(Transaction tr, ConsumerConfig directories, Multimap<String, Integer> assignments) {
         for (Map.Entry<String, Collection<Integer>> entry : assignments.asMap().entrySet()) {
             for (Integer integer : entry.getValue()) {
                 tr.set(directories.getTopicAssignmentsKey(integer), entry.getKey().getBytes(Helpers.CHARSET));
@@ -86,42 +89,53 @@ public class Consumer {
     }
 
     public void consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
-        ImmutableMap<Integer, ExecutorService> executors = getExecutors(Helpers.NUM_EXECUTORS);
+        ConsumerConfig consumerConfig = initConsumer(topic, consumerName, consumer);
 
-        TopicDirectories directories = ensureDirectories(topic);
-
-        Collection<Integer> shards = addConsumer(topic, consumerName, directories);
+        Collection<Integer> shards = addConsumer(consumerConfig);
 
         // start heartbeat thread
         new Thread(() -> {
             while (true) {
-//                heartbeat(topic, consumerName);
+                log.info("heartbeat");
+                heartbeat(consumerConfig);
                 try {
-                    Thread.sleep(1000);
+                    Thread.sleep(2000);
                 } catch (InterruptedException e) {
                     log.info("heartbeat interrupted, closing consume topic=" + topic + " consumerName=" + consumerName);
                     break;
                 }
             }
-        });
+        }).start();
 
-        // ensure consumeers for each of our shards
+        ensureShardThreads(consumerConfig, shards);
+    }
+
+    private void ensureShardThreads(ConsumerConfig consumerConfig, Collection<Integer> shards) {
+        // ensure consumers for each of our shards
         for (Integer shard : shards) {
             final int finalI = shard;
             new Thread(() -> {
                 try {
-                    consumeShard(topic, finalI, executors, consumer, consumerName, directories);
+                    consumeShard(consumerConfig, finalI);
                 } catch (Exception e){
                     log.error("error consuming", e);
                 }
-                log.debug("Shutting down consumer shard thread topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shard);
+                log.debug("Shutting down consumer shard thread topic=" + consumerConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
             }).start();
         }
     }
 
 
-    private TopicDirectories ensureDirectories(String topic) {
-        return db.run((Function<Transaction, TopicDirectories>) tr -> {
+    /**
+     *
+     * @param topic
+     * @param consumerName
+     * @param consumer
+     * @return ConsumerConfig
+     */
+    private ConsumerConfig initConsumer(String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
+        return db.run((Function<Transaction, ConsumerConfig>) tr -> {
+            // init directories
             DirectorySubspace assignments = mkdirp(tr, getTopicAssignmentPath(topic));
             DirectorySubspace heartbeats = mkdirp(tr, getTopicHeartbeatPath(topic));
 
@@ -132,7 +146,12 @@ public class Consumer {
                 shardData.put(i, mkdirp(tr, Helpers.getTopicShardDataPath(topic, i)));
             }
 
-            return new TopicDirectories(assignments, heartbeats, shardMetrics.build(), shardData.build());
+            // register consumer
+            tr.set(heartbeats.pack(consumerName), currentTimeMillisAsBytes());
+
+            ImmutableMap<Integer, ExecutorService> executors = getExecutors(Helpers.NUM_EXECUTORS);
+
+            return new ConsumerConfig(topic, consumerName, consumer, assignments, heartbeats,  shardMetrics.build(), shardData.build(), executors);
         });
     }
 
@@ -145,22 +164,64 @@ public class Consumer {
         return executorsBuilder.build();
     }
 
-    private void heartbeat(String topic, String consumerName, TopicDirectories directories) {
-        db.run((Function<Transaction, Void>) tr -> {
-            // look for dead consumers
-            DirectorySubspace directory = directories.heartbeats;
-            long now = System.currentTimeMillis();
-            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(directory.pack()))) {
-                String name = directory.unpack(keyValue.getValue()).getString(0);
-                long millis = bytesToMillis(keyValue.getValue());
+    private static class HeartbeatResult {
+        public final List<String> removedConsumers;
+        public final Multimap<String, Integer> assignments;
 
-                if (now - millis > 5000) {
-                    removeConsumer(tr, topic, name, directories);
-                }
+        private HeartbeatResult(List<String> removedConsumers, Multimap<String, Integer> assignments) {
+            this.removedConsumers = removedConsumers;
+            this.assignments = assignments;
+        }
+    }
+
+    private void heartbeat(ConsumerConfig consumerConfig) {
+
+        HeartbeatResult result = db.run((Function<Transaction, HeartbeatResult>) tr -> heartbeat(tr, consumerConfig));
+
+        if (!result.removedConsumers.isEmpty()) {
+            log.debug("Assignments updated, removed consumer(s) topic=" + consumerConfig.topic + " removedNames=" + result.removedConsumers + " newAssignments=" + result.assignments);
+        }
+
+    }
+
+    private HeartbeatResult heartbeat(Transaction tr, ConsumerConfig consumerConfig) {
+        ImmutableList.Builder<String> removedConsumersB = ImmutableList.builder();
+
+        // look for dead consumers
+        long now = System.currentTimeMillis();
+
+        ImmutableSet.Builder<String> liveConsumersB = ImmutableSet.builder();
+        for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(consumerConfig.heartbeats.pack()))) {
+            String consumerName = consumerConfig.heartbeats.unpack(keyValue.getKey()).getString(0);
+            if (consumerName.equals(consumerConfig.name)){
+                liveConsumersB.add(consumerConfig.name);
+                continue;
             }
-            tr.set(directory.pack(consumerName), currentTimeMillisAsBytes());
-            return null;
+            long millis = bytesToMillis(keyValue.getValue());
+
+            if (now - millis > CONSUMER_TIMEOUT_MILLIS) {
+                removedConsumersB.add(consumerName);
+            } else {
+                liveConsumersB.add(consumerName);
+            }
+        }
+
+        ImmutableSet<String> liveConsumers = liveConsumersB.build();
+        Multimap<String, Integer> assignments = fetchAssignments(tr, consumerConfig.assignments);
+
+        assignments.keySet().forEach(consumerName -> {
+            if (!liveConsumers.contains(consumerName)){
+                removedConsumersB.add(consumerName);
+            }
         });
+
+        ImmutableList<String> removedConsumers = removedConsumersB.build();
+        assignments = removeConsumers(tr, removedConsumers, consumerConfig, fetchAssignments(tr, consumerConfig.assignments));
+
+        // update our timestamp
+        tr.set(consumerConfig.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
+
+        return new HeartbeatResult(removedConsumers, assignments);
     }
 
     public void clearAssignments(String topic) {
@@ -184,83 +245,82 @@ public class Consumer {
         });
     }
 
-
-    private Collection<Integer> addConsumer(String topic, String name, TopicDirectories directories) {
-
-        return db.run((Function<Transaction, Collection<Integer>>) tr -> {
-            // fetch currentAssignments from fdb
-            Multimap<String, Integer> assignments = fetchAssignments(tr, directories.assignments);
-            log.debug("Assignments updating, currently name=" + name + " assignments=" + assignments);
+    private Collection<Integer> addConsumer(ConsumerConfig consumerConfig) {
+        Multimap<String, Integer> assignments = db.run((Function<Transaction, Multimap<String, Integer>>) tr -> {
+            // clean up state
+            HeartbeatResult result = heartbeat(tr, consumerConfig);
 
             // add this consumer
-            assignments = Divvy.addConsumer(assignments, name, Helpers.NUM_SHARDS);
-            log.debug("Assignments updated, added name=" + name + " assignments=" + assignments);
+            Multimap<String, Integer> newAssignments = Divvy.addConsumer(result.assignments, consumerConfig.name, Helpers.NUM_SHARDS);
 
-            // save currentAssignments
-            saveAssignments(tr, directories, assignments);
-            return assignments.get(name);
+            saveAssignments(tr, consumerConfig, newAssignments);
+            return newAssignments;
         });
 
+        log.debug("Assignments updated, added consumer topic=" + consumerConfig.topic + " name=" + consumerConfig.name + " assignments=" + assignments);
+
+        return assignments.get(consumerConfig.name);
     }
 
-    private Collection<Integer> removeConsumer(String topic, String name, TopicDirectories directories) {
+//    private Collection<Integer> removeConsumer(String topic, String name, TopicDirectories directories) {
+//
+//        return db.run((Function<Transaction, Collection<Integer>>) tr -> removeConsumer(tr, name, directories));
+//
+//    }
 
-        return db.run((Function<Transaction, Collection<Integer>>) tr -> removeConsumer(tr, topic, name, directories));
-
-    }
-
-    private Collection<Integer> removeConsumer(Transaction tr, String topic, String name, TopicDirectories directories) {
+    private Multimap<String, Integer> removeConsumers(Transaction tr, Collection<String> names, ConsumerConfig consumerConfig, Multimap<String, Integer> assignments) {
         // fetch currentAssignments from fdb
-        Multimap<String, Integer> assignments = fetchAssignments(tr, directories.assignments);
 
-        // add this consumer
-        assignments = Divvy.removeConsumer(assignments, name, Helpers.NUM_SHARDS);
-        log.debug("Assignments updated, removed name=" + name + " assignments=" + assignments);
+        // remove these consumers
+        for (String name : names) {
+            assignments = Divvy.removeConsumer(assignments, name, Helpers.NUM_SHARDS);
+
+            // unregister consumer / remove heartbeat
+            tr.clear(consumerConfig.heartbeats.pack(name));
+        }
 
         // save currentAssignments
-        saveAssignments(tr, directories, assignments);
-        return assignments.get(name);
+        saveAssignments(tr, consumerConfig, assignments);
+        return assignments;
     }
 
-    private void consumeShard(final String topic, final Integer shardIndex, ImmutableMap<Integer, ExecutorService> executors, java.util.function.Consumer<Envelope> consumer, String consumerName, TopicDirectories directories) {
-        while (consumeWork(executors, consumer, topic, consumerName, shardIndex, directories)) {
-
-        }
+    private void consumeShard(ConsumerConfig consumerConfig, final Integer shardIndex) {
+        while (consumeWork(consumerConfig, shardIndex)) {}
     }
 
 
-    private boolean consumeWork(ImmutableMap<Integer, ExecutorService> executors, java.util.function.Consumer<Envelope> consumer, String topic, String consumerName, Integer shardIndex, TopicDirectories directories) {
+    private boolean consumeWork(ConsumerConfig consumerConfig, Integer shardIndex) {
         // ensure we still have this shard, otherwise return false to stop consuming this shard
 
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
         Optional<Future<Void>> watch = db.run((Function<Transaction, Optional<Future<Void>>>) tr -> {
             // try to read from queue first?
-            if (!isMine(tr, directories, shardIndex, consumerName)) {
+            if (!isMine(tr, consumerConfig, shardIndex)) {
                 return Optional.empty();
             }
-            byte[] topicWatchKey = directories.getTopicShardWatchKey(shardIndex);
+            byte[] topicWatchKey = consumerConfig.getTopicShardWatchKey(shardIndex);
             return Optional.of(tr.watch(topicWatchKey));
         });
 
         if (!watch.isPresent()) {
-            log.debug("Assignment changed, shutting down consume topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shardIndex);
+//            log.debug("Assignment changed, shutting down consume topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shardIndex);
             return false;
         }
 //        watch.map((Function<Void, Void>) aVoid -> {
 //            return null;
 //        });
 
-        watch.get();
+        watch.get().get();
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
         List<Envelope> fetched = db.run((Function<Transaction, List<Envelope>>) tr -> {
             // make sure we dont read things that are no longer ours
-            if (!isMine(tr, directories, shardIndex, consumerName)) {
+            if (!isMine(tr, consumerConfig, shardIndex)) {
                 return ImmutableList.of();
             }
 
-            DirectorySubspace dataDir = directories.shardData.get(shardIndex);
+            DirectorySubspace dataDir = consumerConfig.shardData.get(shardIndex);
 
             List<Envelope> result = new ArrayList<>();
             for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()))) {
@@ -281,7 +341,7 @@ public class Consumer {
                     result.add(new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message));
                 } catch (Exception e){
                     // issue with deserialization
-                    log.warn("error popping", e);
+                    log.warn("swallowed error during consume, lost message", e);
                 }
             }
 
@@ -289,17 +349,16 @@ public class Consumer {
         });
 
         for (Envelope envelope : fetched) {
-
             if (log.isTraceEnabled()) {
-                log.trace("Submitting to executor topic=" + topic + " " + envelope.toString());
+                log.trace("Submitting to executor topic=" + consumerConfig.topic + " " + envelope.toString());
             }
-            executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumer, envelope));
+            consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig.consumer, envelope));
         }
 
         return true;
     }
 
-    private void consumerWrapper(java.util.function.Consumer<Envelope> consumer, Envelope envelope){
+    private static void consumerWrapper(java.util.function.Consumer<Envelope> consumer, Envelope envelope){
         try {
             consumer.accept(envelope);
         }catch (Exception e){
@@ -308,9 +367,9 @@ public class Consumer {
         }
     }
 
-    private boolean isMine(Transaction tr, TopicDirectories directories, Integer shardIndex, String consumerName) {
-        return fetchAssignment(tr, directories, shardIndex)
-                .filter(consumerName::equals).isPresent();
+    private boolean isMine(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
+        return fetchAssignment(tr, consumerConfig, shardIndex)
+                .filter(consumerConfig.name::equals).isPresent();
     }
 
 }
