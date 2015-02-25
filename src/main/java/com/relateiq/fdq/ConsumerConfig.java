@@ -3,6 +3,7 @@ package com.relateiq.fdq;
 import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
 
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -22,6 +23,7 @@ public class ConsumerConfig {
     public final Map<Integer, DirectorySubspace> shardMetrics;
     public final Map<Integer, DirectorySubspace> shardData;
     public final Map<Integer, ExecutorService> executors;
+    public Map<Integer, Thread> shardThreads = Maps.newHashMap();
 
 
     public ConsumerConfig(String topic, String name, Consumer<Envelope> consumer, DirectorySubspace assignments, DirectorySubspace heartbeats, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData, ImmutableMap<Integer, ExecutorService> executors) {
@@ -43,5 +45,11 @@ public class ConsumerConfig {
         return assignments.pack(shardIndex);
     }
 
-
+    @Override
+    public String toString() {
+        return "{" +
+                "'topic' : '" + topic + '\'' +
+                ", 'name' : '" + name + '\'' +
+                '}';
+    }
 }

@@ -37,15 +37,22 @@ import static com.relateiq.fdq.Helpers.getTopicHeartbeatPath;
  */
 public class Consumer {
     public static final Logger log = LoggerFactory.getLogger(Consumer.class);
-    private static final byte[] NULL = {0};
     public static final int CONSUMER_TIMEOUT_MILLIS = 5000;
-
+    private static final byte[] NULL = {0};
     private final Database db;
 
     public Consumer(Database db) {
         this.db = db;
     }
 
+    private static void consumerWrapper(java.util.function.Consumer<Envelope> consumer, Envelope envelope) {
+        try {
+            consumer.accept(envelope);
+        } catch (Exception e) {
+            // todo: better handling of errors
+            log.error("error during consume", e);
+        }
+    }
 
     /**
      *
@@ -91,8 +98,6 @@ public class Consumer {
     public void consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
         ConsumerConfig consumerConfig = initConsumer(topic, consumerName, consumer);
 
-        Collection<Integer> shards = addConsumer(consumerConfig);
-
         // start heartbeat thread
         new Thread(() -> {
             while (true) {
@@ -107,24 +112,33 @@ public class Consumer {
             }
         }).start();
 
-        ensureShardThreads(consumerConfig, shards);
     }
 
     private void ensureShardThreads(ConsumerConfig consumerConfig, Collection<Integer> shards) {
         // ensure consumers for each of our shards
         for (Integer shard : shards) {
+            Thread thread = consumerConfig.shardThreads.get(shard);
+            if (thread != null && thread.isAlive()) {
+                continue;
+            }
+
             final int finalI = shard;
-            new Thread(() -> {
+
+            log.info("Starting thread for " + consumerConfig.toString() + " shard="  + shard);
+            thread = new Thread(() -> {
                 try {
                     consumeShard(consumerConfig, finalI);
-                } catch (Exception e){
+                } catch (Exception e) {
                     log.error("error consuming", e);
                 }
                 log.debug("Shutting down consumer shard thread topic=" + consumerConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
-            }).start();
+            });
+
+            consumerConfig.shardThreads.put(shard, thread);
+            thread.start();
+            // add thread shutdown hook to remove it 
         }
     }
-
 
     /**
      *
@@ -151,7 +165,7 @@ public class Consumer {
 
             ImmutableMap<Integer, ExecutorService> executors = getExecutors(Helpers.NUM_EXECUTORS);
 
-            return new ConsumerConfig(topic, consumerName, consumer, assignments, heartbeats,  shardMetrics.build(), shardData.build(), executors);
+            return new ConsumerConfig(topic, consumerName, consumer, assignments, heartbeats, shardMetrics.build(), shardData.build(), executors);
         });
     }
 
@@ -164,26 +178,29 @@ public class Consumer {
         return executorsBuilder.build();
     }
 
-    private static class HeartbeatResult {
-        public final List<String> removedConsumers;
-        public final Multimap<String, Integer> assignments;
-
-        private HeartbeatResult(List<String> removedConsumers, Multimap<String, Integer> assignments) {
-            this.removedConsumers = removedConsumers;
-            this.assignments = assignments;
-        }
-    }
-
     private void heartbeat(ConsumerConfig consumerConfig) {
 
         HeartbeatResult result = db.run((Function<Transaction, HeartbeatResult>) tr -> heartbeat(tr, consumerConfig));
 
-        if (!result.removedConsumers.isEmpty()) {
-            log.debug("Assignments updated, removed consumer(s) topic=" + consumerConfig.topic + " removedNames=" + result.removedConsumers + " newAssignments=" + result.assignments);
+        ensureShardThreads(consumerConfig, result.assignments.get(consumerConfig.name));
+
+        if (result.isAssignmentsUpdated) {
+            log.debug("Assignments updated, topic=" + consumerConfig.topic + " removedConsumers=" + result.removedConsumers + " assignments=" + result.assignments);
         }
 
     }
 
+    /**
+     * This method is responsible for maintaing proper state
+     *
+     * This will:
+     *  1. clean out dead consumers
+     *  2. ensure this consumer is registered
+     *
+     * @param tr
+     * @param consumerConfig
+     * @return
+     */
     private HeartbeatResult heartbeat(Transaction tr, ConsumerConfig consumerConfig) {
         ImmutableList.Builder<String> removedConsumersB = ImmutableList.builder();
 
@@ -207,21 +224,29 @@ public class Consumer {
         }
 
         ImmutableSet<String> liveConsumers = liveConsumersB.build();
-        Multimap<String, Integer> assignments = fetchAssignments(tr, consumerConfig.assignments);
+        Multimap<String, Integer> originalAssignments = fetchAssignments(tr, consumerConfig.assignments);
 
-        assignments.keySet().forEach(consumerName -> {
+        originalAssignments.keySet().forEach(consumerName -> {
             if (!liveConsumers.contains(consumerName)){
                 removedConsumersB.add(consumerName);
             }
         });
 
         ImmutableList<String> removedConsumers = removedConsumersB.build();
-        assignments = removeConsumers(tr, removedConsumers, consumerConfig, fetchAssignments(tr, consumerConfig.assignments));
+        Multimap<String, Integer> newAssignments = removeConsumers(tr, removedConsumers, consumerConfig, originalAssignments);
+
+        // ensure our consumer is added
+        newAssignments = Divvy.addConsumer(newAssignments, consumerConfig.name, Helpers.NUM_SHARDS);
+
+        boolean isAssignmentsUpdated = !newAssignments.equals(originalAssignments);
+        if (isAssignmentsUpdated) {
+            saveAssignments(tr, consumerConfig, newAssignments);
+        }
 
         // update our timestamp
         tr.set(consumerConfig.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
 
-        return new HeartbeatResult(removedConsumers, assignments);
+        return new HeartbeatResult(removedConsumers, newAssignments, isAssignmentsUpdated);
     }
 
     public void clearAssignments(String topic) {
@@ -245,22 +270,6 @@ public class Consumer {
         });
     }
 
-    private Collection<Integer> addConsumer(ConsumerConfig consumerConfig) {
-        Multimap<String, Integer> assignments = db.run((Function<Transaction, Multimap<String, Integer>>) tr -> {
-            // clean up state
-            HeartbeatResult result = heartbeat(tr, consumerConfig);
-
-            // add this consumer
-            Multimap<String, Integer> newAssignments = Divvy.addConsumer(result.assignments, consumerConfig.name, Helpers.NUM_SHARDS);
-
-            saveAssignments(tr, consumerConfig, newAssignments);
-            return newAssignments;
-        });
-
-        log.debug("Assignments updated, added consumer topic=" + consumerConfig.topic + " name=" + consumerConfig.name + " assignments=" + assignments);
-
-        return assignments.get(consumerConfig.name);
-    }
 
 //    private Collection<Integer> removeConsumer(String topic, String name, TopicDirectories directories) {
 //
@@ -279,8 +288,6 @@ public class Consumer {
             tr.clear(consumerConfig.heartbeats.pack(name));
         }
 
-        // save currentAssignments
-        saveAssignments(tr, consumerConfig, assignments);
         return assignments;
     }
 
@@ -291,7 +298,6 @@ public class Consumer {
 
     private boolean consumeWork(ConsumerConfig consumerConfig, Integer shardIndex) {
         // ensure we still have this shard, otherwise return false to stop consuming this shard
-
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
         Optional<Future<Void>> watch = db.run((Function<Transaction, Optional<Future<Void>>>) tr -> {
@@ -358,18 +364,21 @@ public class Consumer {
         return true;
     }
 
-    private static void consumerWrapper(java.util.function.Consumer<Envelope> consumer, Envelope envelope){
-        try {
-            consumer.accept(envelope);
-        }catch (Exception e){
-            // todo: better handling of errors
-            log.error("error during consume", e);
-        }
-    }
-
     private boolean isMine(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
         return fetchAssignment(tr, consumerConfig, shardIndex)
                 .filter(consumerConfig.name::equals).isPresent();
+    }
+
+    private static class HeartbeatResult {
+        public final List<String> removedConsumers;
+        public final Multimap<String, Integer> assignments;
+        public final boolean isAssignmentsUpdated;
+
+        private HeartbeatResult(List<String> removedConsumers, Multimap<String, Integer> assignments, boolean isAssignmentsUpdated) {
+            this.removedConsumers = removedConsumers;
+            this.assignments = assignments;
+            this.isAssignmentsUpdated = isAssignmentsUpdated;
+        }
     }
 
 }
