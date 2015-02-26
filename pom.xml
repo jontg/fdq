@@ -18,6 +18,7 @@
     <!-- Include subProjects here -->
     <modules>
         <module>core</module>
+        <module>cli</module>
     </modules>
     <!-- Include common dependencies here -->
     <dependencyManagement>

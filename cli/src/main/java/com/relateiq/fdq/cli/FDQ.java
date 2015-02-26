@@ -1,7 +1,9 @@
-package com.relateiq.fdq;
+package com.relateiq.fdq.cli;
 
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
+import com.relateiq.fdq.Consumer;
+import com.relateiq.fdq.Producer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
