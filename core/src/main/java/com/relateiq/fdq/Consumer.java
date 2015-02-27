@@ -101,7 +101,9 @@ public class Consumer {
         // start heartbeat thread
         new Thread(() -> {
             while (true) {
-                log.info("heartbeat");
+                if (log.isTraceEnabled()) {
+                    log.trace("heartbeat " + consumerConfig.toString());
+                }
                 heartbeat(consumerConfig);
                 try {
                     Thread.sleep(2000);
@@ -131,8 +133,10 @@ public class Consumer {
                 } catch (Exception e) {
                     log.error("error consuming", e);
                 }
-                log.debug("Shutting down consumer shard thread topic=" + consumerConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
+                consumerConfig.shardThreads.remove(shard);
+                log.info("Shutting down consumer shard thread topic=" + consumerConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
             });
+//            consumeShardAsync(consumerConfig, finalI);
 
             consumerConfig.shardThreads.put(shard, thread);
             thread.start();
@@ -290,6 +294,77 @@ public class Consumer {
 
         return assignments;
     }
+
+    private void consumeShardAsync(ConsumerConfig consumerConfig, final Integer shardIndex) {
+        consumeWorkAsync(consumerConfig, shardIndex);
+    }
+
+    private static class ConsumeWorkAsyncResult {
+        public final Future<Void> watch;
+        public final List<Envelope> fetched;
+
+        private ConsumeWorkAsyncResult(Future<Void> watch, List<Envelope> fetched) {
+            this.watch = watch;
+            this.fetched = fetched;
+        }
+    }
+    private void consumeWorkAsync(ConsumerConfig consumerConfig, Integer shardIndex) {
+        // ensure we still have this shard, otherwise return false to stop consuming this shard
+
+        // casting is here because of a java 8 compiler bug with ambiguous overloads :(
+        Optional<ConsumeWorkAsyncResult> watcho = db.run((Function<Transaction, Optional<ConsumeWorkAsyncResult>>) tr -> {
+            if (!isMine(tr, consumerConfig, shardIndex)) {
+                return Optional.empty();
+            }
+
+            DirectorySubspace dataDir = consumerConfig.shardData.get(shardIndex);
+
+            List<Envelope> result = new ArrayList<>();
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()))) {
+
+                tr.addReadConflictKey(keyValue.getKey());
+                tr.clear(keyValue.getKey());
+
+                try {
+
+                    Tuple key = dataDir.unpack(keyValue.getKey());
+                    Tuple value = Tuple.fromBytes(keyValue.getValue());
+
+                    long insertionTime = key.getLong(0);
+
+                    String shardKey = value.getString(0);
+                    byte[] message = value.getBytes(1);
+                    int executorIndex = Helpers.modHash(shardKey, Helpers.NUM_EXECUTORS, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
+                    Envelope envelope = new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message);
+                    result.add(envelope);
+//                    consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig.consumer, envelope));
+                } catch (Exception e) {
+                    // issue with deserialization
+                    log.warn("swallowed error during consume, lost message", e);
+                }
+            }
+
+            if (!isMine(tr, consumerConfig, shardIndex)) {
+                return Optional.empty();
+            }
+            byte[] topicWatchKey = consumerConfig.getTopicShardWatchKey(shardIndex);
+            return Optional.of(new ConsumeWorkAsyncResult(tr.watch(topicWatchKey), result));
+        });
+
+        watcho.ifPresent(result -> {
+            for (Envelope envelope : result.fetched) {
+                if (log.isTraceEnabled()) {
+                    log.trace("Submitting to executor topic=" + consumerConfig.topic + " " + envelope.toString());
+                }
+                consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig.consumer, envelope));
+            }
+            result.watch.map((Function<Void, Void>) f2 -> {
+                consumeWorkAsync(consumerConfig, shardIndex);
+                return null;
+            });
+        });
+    }
+
 
     private void consumeShard(ConsumerConfig consumerConfig, final Integer shardIndex) {
         while (consumeWork(consumerConfig, shardIndex)) {}
