@@ -1,0 +1,4 @@
+foundationdb:
+  image: relateiq/foundationdb:3.0.7
+  ports:
+    - "4500:4500"
