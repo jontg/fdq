@@ -22,7 +22,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static com.relateiq.fdq.DirectoryCache.mkdirp;
 import static com.relateiq.fdq.DirectoryCache.rmdir;
@@ -38,6 +40,8 @@ import static com.relateiq.fdq.Helpers.getTopicHeartbeatPath;
 public class Consumer {
     public static final Logger log = LoggerFactory.getLogger(Consumer.class);
     public static final int CONSUMER_TIMEOUT_MILLIS = 5000;
+    public static final int BATCH_SIZE = 10;
+    public static final int EXECUTOR_QUEUE_SIZE = 1000;
     private static final byte[] NULL = {0};
     private final Database db;
 
@@ -167,7 +171,8 @@ public class Consumer {
             // register consumer
             tr.set(heartbeats.pack(consumerName), currentTimeMillisAsBytes());
 
-            ImmutableMap<Integer, ExecutorService> executors = getExecutors(Helpers.NUM_EXECUTORS);
+            // TODO: configurable # of executors
+            ImmutableMap<Integer, ExecutorService> executors = getExecutors(ConsumerConfig.NUM_EXECUTORS);
 
             return new ConsumerConfig(topic, consumerName, consumer, assignments, heartbeats, shardMetrics.build(), shardData.build(), executors);
         });
@@ -177,7 +182,9 @@ public class Consumer {
         // because we want to ensure we dont execute 2 tuples with same shard key at same time we want N different single-worker executors
         ImmutableMap.Builder<Integer, ExecutorService> executorsBuilder = ImmutableMap.builder();
         for (int i = 0; i < numExecutors; i++) {
-            executorsBuilder.put(i, Executors.newFixedThreadPool(1));
+            executorsBuilder.put(i, new ThreadPoolExecutor(1, 1,
+                    0L, TimeUnit.MILLISECONDS,
+                    new LinkedBlockingQueue<>(EXECUTOR_QUEUE_SIZE)));
         }
         return executorsBuilder.build();
     }
@@ -250,6 +257,9 @@ public class Consumer {
         // update our timestamp
         tr.set(consumerConfig.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
 
+        // check for de/activation
+
+
         return new HeartbeatResult(removedConsumers, newAssignments, isAssignmentsUpdated);
     }
 
@@ -299,20 +309,11 @@ public class Consumer {
         consumeWorkAsync(consumerConfig, shardIndex);
     }
 
-    private static class ConsumeWorkAsyncResult {
-        public final Future<Void> watch;
-        public final List<Envelope> fetched;
-
-        private ConsumeWorkAsyncResult(Future<Void> watch, List<Envelope> fetched) {
-            this.watch = watch;
-            this.fetched = fetched;
-        }
-    }
     private void consumeWorkAsync(ConsumerConfig consumerConfig, Integer shardIndex) {
         // ensure we still have this shard, otherwise return false to stop consuming this shard
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
-        Optional<ConsumeWorkAsyncResult> watcho = db.run((Function<Transaction, Optional<ConsumeWorkAsyncResult>>) tr -> {
+        Future<Optional<ConsumeWorkResult>> watcho = db.runAsync((Function<Transaction, Future<Optional<ConsumeWorkResult>>>) tr -> {
             if (!isMine(tr, consumerConfig, shardIndex)) {
                 return Optional.empty();
             }
@@ -334,7 +335,7 @@ public class Consumer {
 
                     String shardKey = value.getString(0);
                     byte[] message = value.getBytes(1);
-                    int executorIndex = Helpers.modHash(shardKey, Helpers.NUM_EXECUTORS, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
+                    int executorIndex = Helpers.modHash(shardKey, consumerConfig.numExecutors, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
                     Envelope envelope = new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message);
                     result.add(envelope);
 //                    consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig.consumer, envelope));
@@ -348,7 +349,7 @@ public class Consumer {
                 return Optional.empty();
             }
             byte[] topicWatchKey = consumerConfig.getTopicShardWatchKey(shardIndex);
-            return Optional.of(new ConsumeWorkAsyncResult(tr.watch(topicWatchKey), result));
+            return Optional.of(new ConsumeWorkResult(tr.watch(topicWatchKey), result, true));
         });
 
         watcho.ifPresent(result -> {
@@ -365,46 +366,24 @@ public class Consumer {
         });
     }
 
-
     private void consumeShard(ConsumerConfig consumerConfig, final Integer shardIndex) {
         while (consumeWork(consumerConfig, shardIndex)) {}
     }
 
-
     private boolean consumeWork(ConsumerConfig consumerConfig, Integer shardIndex) {
-        // ensure we still have this shard, otherwise return false to stop consuming this shard
-
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
-        Optional<Future<Void>> watch = db.run((Function<Transaction, Optional<Future<Void>>>) tr -> {
-            // try to read from queue first?
-            if (!isMine(tr, consumerConfig, shardIndex)) {
-                return Optional.empty();
-            }
-            byte[] topicWatchKey = consumerConfig.getTopicShardWatchKey(shardIndex);
-            return Optional.of(tr.watch(topicWatchKey));
-        });
-
-        if (!watch.isPresent()) {
-//            log.debug("Assignment changed, shutting down consume topic=" + topic + " consumeName=" + consumerName + " shardIndex=" + shardIndex);
-            return false;
-        }
-//        watch.map((Function<Void, Void>) aVoid -> {
-//            return null;
-//        });
-
-        watch.get().get();
-
-        // casting is here because of a java 8 compiler bug with ambiguous overloads :(
-        List<Envelope> fetched = db.run((Function<Transaction, List<Envelope>>) tr -> {
+        ConsumeWorkResult workResult = db.run((Function<Transaction, ConsumeWorkResult>) tr -> {
             // make sure we dont read things that are no longer ours
             if (!isMine(tr, consumerConfig, shardIndex)) {
-                return ImmutableList.of();
+                return new ConsumeWorkResult(null, null, false);
             }
 
+            // FETCH SOME TUPLES
             DirectorySubspace dataDir = consumerConfig.shardData.get(shardIndex);
-
             List<Envelope> result = new ArrayList<>();
-            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()))) {
+            int numFound = 0;
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()), consumerConfig.batchSize)) {
+                numFound++;
                 tr.addReadConflictKey(keyValue.getKey());
                 tr.clear(keyValue.getKey());
 
@@ -413,12 +392,11 @@ public class Consumer {
                     Tuple key = dataDir.unpack(keyValue.getKey());
                     Tuple value = Tuple.fromBytes(keyValue.getValue());
 //                log.debug("kv: " + key.getLong(2) + " " + key.getLong(3) + " : " + new String(keyValue.getValue()));
-
                     long insertionTime = key.getLong(0);
 
                     String shardKey = value.getString(0);
                     byte[] message = value.getBytes(1);
-                    int executorIndex = Helpers.modHash(shardKey, Helpers.NUM_EXECUTORS, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
+                    int executorIndex = Helpers.modHash(shardKey, consumerConfig.numExecutors, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
                     result.add(new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message));
                 } catch (Exception e){
                     // issue with deserialization
@@ -426,14 +404,40 @@ public class Consumer {
                 }
             }
 
-            return result;
+            if (numFound < BATCH_SIZE) {
+                // exhausted
+                byte[] topicWatchKey = consumerConfig.getTopicShardWatchKey(shardIndex);
+                return new ConsumeWorkResult(tr.watch(topicWatchKey), result, true);
+            }
+
+
+            return new ConsumeWorkResult(null, result, true);
         });
 
-        for (Envelope envelope : fetched) {
+        if (!workResult.isStillActive) {
+            // shutting down!
+            return false;
+        }
+
+        for (Envelope envelope : workResult.fetched) {
             if (log.isTraceEnabled()) {
-                log.trace("Submitting to executor topic=" + consumerConfig.topic + " " + envelope.toString());
+                log.trace("Submitting to executor " + consumerConfig.toString() + " " + envelope.toString());
             }
             consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig.consumer, envelope));
+        }
+
+        if (workResult.watch != null) {
+            log.debug("Exhausted queue, watching, executor topic=" + consumerConfig.toString() + " shardIndex=" + shardIndex);
+            workResult.watch.get();
+        } else {
+            //optionally sleep
+            if (consumerConfig.sleepBetweenBatches != 0) {
+                try {
+                    Thread.sleep(consumerConfig.sleepBetweenBatches);
+                } catch (InterruptedException e) {
+                    return false;
+                }
+            }
         }
 
         return true;
@@ -442,6 +446,18 @@ public class Consumer {
     private boolean isMine(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
         return fetchAssignment(tr, consumerConfig, shardIndex)
                 .filter(consumerConfig.name::equals).isPresent();
+    }
+
+    private static class ConsumeWorkResult {
+        public final Future<Void> watch;
+        public final List<Envelope> fetched;
+        public final boolean isStillActive;
+
+        private ConsumeWorkResult(Future<Void> watch, List<Envelope> fetched, boolean isStillActive) {
+            this.watch = watch;
+            this.fetched = fetched;
+            this.isStillActive = isStillActive;
+        }
     }
 
     private static class HeartbeatResult {

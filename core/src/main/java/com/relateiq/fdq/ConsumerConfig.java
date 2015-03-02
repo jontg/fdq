@@ -14,6 +14,7 @@ import java.util.function.Consumer;
  */
 public class ConsumerConfig {
 
+    public static final int NUM_EXECUTORS = 10;
     public final java.util.function.Consumer<Envelope> consumer;
     public final String topic;
     public final String name;
@@ -24,6 +25,9 @@ public class ConsumerConfig {
     public final Map<Integer, DirectorySubspace> shardData;
     public final Map<Integer, ExecutorService> executors;
     public Map<Integer, Thread> shardThreads = Maps.newHashMap();
+    public final long sleepBetweenBatches = 0;
+    public final int batchSize = 10;
+    public final int numExecutors = NUM_EXECUTORS;
 
 
     public ConsumerConfig(String topic, String name, Consumer<Envelope> consumer, DirectorySubspace assignments, DirectorySubspace heartbeats, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData, ImmutableMap<Integer, ExecutorService> executors) {
