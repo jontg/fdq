@@ -26,13 +26,10 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import static com.relateiq.fdq.DirectoryCache.mkdirp;
 import static com.relateiq.fdq.DirectoryCache.rmdir;
-import static com.relateiq.fdq.Helpers.NUM_SHARDS;
 import static com.relateiq.fdq.Helpers.bytesToMillis;
 import static com.relateiq.fdq.Helpers.currentTimeMillisAsBytes;
 import static com.relateiq.fdq.Helpers.getTopicAssignmentPath;
-import static com.relateiq.fdq.Helpers.getTopicHeartbeatPath;
 
 /**
  * Created by mbessler on 2/6/15.
@@ -49,12 +46,14 @@ public class Consumer {
         this.db = db;
     }
 
-    private static void consumerWrapper(java.util.function.Consumer<Envelope> consumer, Envelope envelope) {
+    private void consumerWrapper(ConsumerConfig consumerConfig, Envelope envelope) {
         try {
-            consumer.accept(envelope);
+            consumerConfig.consumer.accept(envelope);
+//            db.run((Function<Transaction, Void>) tr -> tr.clear(consumerConfig.runningData.pack()));
         } catch (Exception e) {
             // todo: better handling of errors
             log.error("error during consume", e);
+            // put in error queue
         }
     }
 
@@ -79,22 +78,22 @@ public class Consumer {
     /**
      *
      * @param tr the transaction
-     * @param directories
+     * @param consumerConfig
      * @param shardIndex the
      * @return
      */
-    private Optional<String> fetchAssignment(Transaction tr, ConsumerConfig directories, Integer shardIndex) {
-        byte[] bytes = tr.get(directories.getTopicAssignmentsKey(shardIndex)).get();
+    private Optional<String> fetchAssignment(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
+        byte[] bytes = tr.get(consumerConfig.topicConfig.getTopicAssignmentsKey(shardIndex)).get();
         if (bytes == null) {
             return Optional.empty();
         }
         return Optional.of(new String(bytes, Helpers.CHARSET));
     }
 
-    void saveAssignments(Transaction tr, ConsumerConfig directories, Multimap<String, Integer> assignments) {
+    void saveAssignments(Transaction tr, ConsumerConfig consumerConfig, Multimap<String, Integer> assignments) {
         for (Map.Entry<String, Collection<Integer>> entry : assignments.asMap().entrySet()) {
             for (Integer integer : entry.getValue()) {
-                tr.set(directories.getTopicAssignmentsKey(integer), entry.getKey().getBytes(Helpers.CHARSET));
+                tr.set(consumerConfig.topicConfig.getTopicAssignmentsKey(integer), entry.getKey().getBytes(Helpers.CHARSET));
             }
         }
     }
@@ -138,7 +137,7 @@ public class Consumer {
                     log.error("error consuming", e);
                 }
                 consumerConfig.shardThreads.remove(shard);
-                log.info("Shutting down consumer shard thread topic=" + consumerConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
+                log.info("Shutting down consumer shard thread topic=" + consumerConfig.topicConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
             });
 //            consumeShardAsync(consumerConfig, finalI);
 
@@ -157,24 +156,15 @@ public class Consumer {
      */
     private ConsumerConfig initConsumer(String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
         return db.run((Function<Transaction, ConsumerConfig>) tr -> {
-            // init directories
-            DirectorySubspace assignments = mkdirp(tr, getTopicAssignmentPath(topic));
-            DirectorySubspace heartbeats = mkdirp(tr, getTopicHeartbeatPath(topic));
-
-            ImmutableMap.Builder<Integer, DirectorySubspace> shardMetrics = ImmutableMap.builder();
-            ImmutableMap.Builder<Integer, DirectorySubspace> shardData = ImmutableMap.builder();
-            for (int i = 0; i < NUM_SHARDS; i++) {
-                shardMetrics.put(i, mkdirp(tr, Helpers.getTopicShardMetricPath(topic, i)));
-                shardData.put(i, mkdirp(tr, Helpers.getTopicShardDataPath(topic, i)));
-            }
+            TopicConfig topicConfig = Helpers.createTopicConfig(tr, topic);
 
             // register consumer
-            tr.set(heartbeats.pack(consumerName), currentTimeMillisAsBytes());
+            tr.set(topicConfig.heartbeats.pack(consumerName), currentTimeMillisAsBytes());
 
             // TODO: configurable # of executors
-            ImmutableMap<Integer, ExecutorService> executors = getExecutors(ConsumerConfig.NUM_EXECUTORS);
+            ImmutableMap<Integer, ExecutorService> executors = getExecutors(ConsumerConfig.DEFAULT_NUM_EXECUTORS);
 
-            return new ConsumerConfig(topic, consumerName, consumer, assignments, heartbeats, shardMetrics.build(), shardData.build(), executors);
+            return new ConsumerConfig(topicConfig, consumerName, consumer, executors);
         });
     }
 
@@ -196,7 +186,7 @@ public class Consumer {
         ensureShardThreads(consumerConfig, result.assignments.get(consumerConfig.name));
 
         if (result.isAssignmentsUpdated) {
-            log.debug("Assignments updated, topic=" + consumerConfig.topic + " removedConsumers=" + result.removedConsumers + " assignments=" + result.assignments);
+            log.debug("Assignments updated, topic=" + consumerConfig.topicConfig.topic + " removedConsumers=" + result.removedConsumers + " assignments=" + result.assignments);
         }
 
     }
@@ -219,8 +209,8 @@ public class Consumer {
         long now = System.currentTimeMillis();
 
         ImmutableSet.Builder<String> liveConsumersB = ImmutableSet.builder();
-        for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(consumerConfig.heartbeats.pack()))) {
-            String consumerName = consumerConfig.heartbeats.unpack(keyValue.getKey()).getString(0);
+        for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(consumerConfig.topicConfig.heartbeats.pack()))) {
+            String consumerName = consumerConfig.topicConfig.heartbeats.unpack(keyValue.getKey()).getString(0);
             if (consumerName.equals(consumerConfig.name)){
                 liveConsumersB.add(consumerConfig.name);
                 continue;
@@ -235,7 +225,7 @@ public class Consumer {
         }
 
         ImmutableSet<String> liveConsumers = liveConsumersB.build();
-        Multimap<String, Integer> originalAssignments = fetchAssignments(tr, consumerConfig.assignments);
+        Multimap<String, Integer> originalAssignments = fetchAssignments(tr, consumerConfig.topicConfig.assignments);
 
         originalAssignments.keySet().forEach(consumerName -> {
             if (!liveConsumers.contains(consumerName)){
@@ -247,7 +237,7 @@ public class Consumer {
         Multimap<String, Integer> newAssignments = removeConsumers(tr, removedConsumers, consumerConfig, originalAssignments);
 
         // ensure our consumer is added
-        newAssignments = Divvy.addConsumer(newAssignments, consumerConfig.name, Helpers.NUM_SHARDS);
+        newAssignments = Divvy.addConsumer(newAssignments, consumerConfig.name, consumerConfig.topicConfig.numShards);
 
         boolean isAssignmentsUpdated = !newAssignments.equals(originalAssignments);
         if (isAssignmentsUpdated) {
@@ -255,7 +245,7 @@ public class Consumer {
         }
 
         // update our timestamp
-        tr.set(consumerConfig.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
+        tr.set(consumerConfig.topicConfig.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
 
         // check for de/activation
 
@@ -296,10 +286,10 @@ public class Consumer {
 
         // remove these consumers
         for (String name : names) {
-            assignments = Divvy.removeConsumer(assignments, name, Helpers.NUM_SHARDS);
+            assignments = Divvy.removeConsumer(assignments, name, consumerConfig.topicConfig.numShards);
 
             // unregister consumer / remove heartbeat
-            tr.clear(consumerConfig.heartbeats.pack(name));
+            tr.clear(consumerConfig.topicConfig.heartbeats.pack(name));
         }
 
         return assignments;
@@ -318,7 +308,7 @@ public class Consumer {
             }
 
             // FETCH SOME TUPLES
-            DirectorySubspace dataDir = consumerConfig.shardData.get(shardIndex);
+            DirectorySubspace dataDir = consumerConfig.topicConfig.shardData.get(shardIndex);
             List<Envelope> result = new ArrayList<>();
             int numFound = 0;
             for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()), consumerConfig.batchSize)) {
@@ -336,7 +326,13 @@ public class Consumer {
                     String shardKey = value.getString(0);
                     byte[] message = value.getBytes(1);
                     int executorIndex = Helpers.modHash(shardKey, consumerConfig.numExecutors, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
-                    result.add(new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message));
+                    Envelope envelope = new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message);
+                    result.add(envelope);
+
+                    // log that we are running this shardkey and tuple
+//                    Long fetchTime = System.currentTimeMillis();
+//                    tr.set(consumerConfig.runningShardKeys.pack(shardKey), Tuple.from(fetchTime).pack());
+//                    tr.set(consumerConfig.runningData.pack(key), Tuple.from(fetchTime).pack());
                 } catch (Exception e){
                     // issue with deserialization
                     log.warn("swallowed error during consume, lost message", e);
@@ -345,7 +341,7 @@ public class Consumer {
 
             if (numFound < BATCH_SIZE) {
                 // exhausted
-                byte[] topicWatchKey = consumerConfig.getTopicShardWatchKey(shardIndex);
+                byte[] topicWatchKey = consumerConfig.topicConfig.shardMetricInserted(shardIndex);
                 return new ConsumeWorkResult(tr.watch(topicWatchKey), result, true);
             }
 
@@ -362,7 +358,7 @@ public class Consumer {
             if (log.isTraceEnabled()) {
                 log.trace("Submitting to executor " + consumerConfig.toString() + " " + envelope.toString());
             }
-            consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig.consumer, envelope));
+            consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig, envelope));
         }
 
         if (workResult.watch != null) {
@@ -370,9 +366,9 @@ public class Consumer {
             workResult.watch.get();
         } else {
             //optionally sleep
-            if (consumerConfig.sleepBetweenBatches != 0) {
+            if (consumerConfig.sleepMillisBetweenBatches != 0) {
                 try {
-                    Thread.sleep(consumerConfig.sleepBetweenBatches);
+                    Thread.sleep(consumerConfig.sleepMillisBetweenBatches);
                 } catch (InterruptedException e) {
                     return false;
                 }

@@ -1,6 +1,7 @@
 package com.relateiq.fdq;
 
 import com.foundationdb.Transaction;
+import com.foundationdb.TransactionContext;
 import com.foundationdb.directory.DirectoryLayer;
 import com.foundationdb.directory.DirectorySubspace;
 
@@ -18,11 +19,11 @@ public class DirectoryCache {
 
     public static final DirectoryLayer DIRECTORY_LAYER = DirectoryLayer.getDefault();
 
-    public static DirectorySubspace mkdirp(Transaction tr, String... strings) {
+    public static DirectorySubspace mkdirp(TransactionContext tr, String... strings) {
         return DIRECTORY_LAYER.createOrOpen(tr, Arrays.asList(strings)).get();
     }
 
-    public static void rmdir(Transaction tr, String... strings) {
+    public static void rmdir(TransactionContext tr, String... strings) {
         DIRECTORY_LAYER.removeIfExists(tr, Arrays.asList(strings)).get();
     }
 }

@@ -1,25 +1,12 @@
 package com.relateiq.fdq;
 
 import com.foundationdb.Database;
-import com.foundationdb.MutationType;
 import com.foundationdb.Transaction;
 import com.foundationdb.async.Function;
-import com.foundationdb.directory.DirectorySubspace;
-import com.foundationdb.tuple.Tuple;
-import com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collection;
 import java.util.Random;
-
-import static com.relateiq.fdq.DirectoryCache.mkdirp;
-import static com.relateiq.fdq.Helpers.MOD_HASH_ITERATIONS_QUEUE_SHARDING;
-import static com.relateiq.fdq.Helpers.NUM_SHARDS;
-import static com.relateiq.fdq.Helpers.ONE;
-import static com.relateiq.fdq.Helpers.getTopicShardDataPath;
-import static com.relateiq.fdq.Helpers.getTopicShardMetricPath;
-import static com.relateiq.fdq.Helpers.modHash;
 
 /**
  * Created by mbessler on 2/6/15.
@@ -35,42 +22,8 @@ public class Producer {
         this.db = db;
     }
 
-    /**
-     * Enqueue messages into a topic
-     *
-     * @param topic the unique identifier for the topic
-     * @param shardKey the key used to consistently route this message to the same executor/thread (via the same consumer)
-     * @param message the actual message
-     */
-    public void produce(final String topic, final String shardKey, final byte[] message) {
-        produceBatch(topic, ImmutableList.of(new MessageRequest(shardKey, message)));
+    public TopicProducer createProducer(String topic){
+        return db.run((Function<Transaction, TopicProducer>)tr -> new TopicProducer(db, Helpers.createTopicConfig(db, topic)));
     }
-
-    /**
-     * Enqueue multiple messages into a topic. Much faster than adding them individually.
-     *
-     * @param topic the unique identifier for the topic
-     * @param messageRequests the shardKey/message pairs to add to this topic in batch
-     */
-    public void produceBatch(final String topic, final Collection<MessageRequest> messageRequests) {
-        db.run((Function<Transaction, Void>) tr -> {
-            for (MessageRequest messageRequest : messageRequests) {
-                Integer shardIndex = modHash(messageRequest.shardKey, NUM_SHARDS, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
-
-                DirectorySubspace dataDir = mkdirp(tr, getTopicShardDataPath(topic, shardIndex));
-                byte[] topicWatchKey = mkdirp(tr, getTopicShardMetricPath(topic, shardIndex)).pack("inserted");
-
-                // TODO: ensure monotonic
-                if (log.isTraceEnabled()) {
-                    log.trace("producing topic=" + topic + " shardKey=" + messageRequest.shardKey + " shardIndex=" + shardIndex);
-                }
-
-                tr.set(dataDir.pack(Tuple.from(System.currentTimeMillis(), random.nextInt())), Tuple.from(messageRequest.shardKey, messageRequest.message).pack());
-                tr.mutate(MutationType.ADD, topicWatchKey, ONE);
-            }
-            return null;
-        });
-    }
-
 
 }

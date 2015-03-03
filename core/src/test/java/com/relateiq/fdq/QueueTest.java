@@ -43,9 +43,9 @@ public class QueueTest {
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
 
-        Producer p = new Producer(db);
         Consumer c = new Consumer(db);
         c.nukeTopic(TOPIC);
+        TopicProducer p = new Producer(db).createProducer(TOPIC);
 
         Multiset<String> rcvd = ConcurrentHashMultiset.create();
 
@@ -56,13 +56,13 @@ public class QueueTest {
 
         log.debug("adding serially");
         long start = System.currentTimeMillis();
-        IntStream.range(0, 100).forEach(i -> p.produce(TOPIC, "" + i, ("qwerty " + i).getBytes()));
+        IntStream.range(0, 100).forEach(i -> p.produce("" + i, ("qwerty " + i).getBytes()));
         log.debug("adding serially took " + (System.currentTimeMillis() - start));
 
         log.debug("adding batch");
         start = System.currentTimeMillis();
         List<MessageRequest> reqs = IntStream.range(0, 100).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
-        p.produceBatch(TOPIC, reqs);
+        p.produceBatch(reqs);
         log.debug("adding batch took " + (System.currentTimeMillis() - start));
 
         log.debug("waiting for messages");

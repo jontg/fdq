@@ -14,45 +14,33 @@ import java.util.function.Consumer;
  */
 public class ConsumerConfig {
 
-    public static final int NUM_EXECUTORS = 10;
+    public static final int DEFAULT_NUM_EXECUTORS = 10;
+
+
+    public final TopicConfig topicConfig;
     public final java.util.function.Consumer<Envelope> consumer;
-    public final String topic;
     public final String name;
 
-    public final DirectorySubspace assignments;
-    public final DirectorySubspace heartbeats;
-    public final Map<Integer, DirectorySubspace> shardMetrics;
-    public final Map<Integer, DirectorySubspace> shardData;
     public final Map<Integer, ExecutorService> executors;
     public Map<Integer, Thread> shardThreads = Maps.newHashMap();
-    public final long sleepBetweenBatches = 0;
+
+    public final long sleepMillisBetweenBatches = 0;
     public final int batchSize = 10;
-    public final int numExecutors = NUM_EXECUTORS;
+    public final int numExecutors = DEFAULT_NUM_EXECUTORS;
 
 
-    public ConsumerConfig(String topic, String name, Consumer<Envelope> consumer, DirectorySubspace assignments, DirectorySubspace heartbeats, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData, ImmutableMap<Integer, ExecutorService> executors) {
-        this.topic = topic;
+    public ConsumerConfig(TopicConfig topicConfig, String name, Consumer<Envelope> consumer, ImmutableMap<Integer, ExecutorService> executors) {
+        this.topicConfig = topicConfig;
         this.name = name;
         this.consumer = consumer;
-        this.assignments = assignments;
-        this.heartbeats = heartbeats;
-        this.shardMetrics = shardMetrics;
-        this.shardData = shardData;
         this.executors = executors;
     }
 
-    public byte[] getTopicShardWatchKey(Integer shardIndex) {
-        return shardMetrics.get(shardIndex).pack(Tuple.from("inserted"));
-    }
-
-    public byte[] getTopicAssignmentsKey(Integer shardIndex) {
-        return assignments.pack(shardIndex);
-    }
 
     @Override
     public String toString() {
         return "{" +
-                "'topic' : '" + topic + '\'' +
+                "'topic' : '" + topicConfig.topic + '\'' +
                 ", 'name' : '" + name + '\'' +
                 '}';
     }
