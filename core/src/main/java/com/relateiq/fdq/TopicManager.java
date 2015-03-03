@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 
+import static com.relateiq.fdq.DirectoryCache.rmdir;
 import static com.relateiq.fdq.Helpers.toInt;
 import static com.relateiq.fdq.Helpers.toLong;
 
@@ -46,36 +47,46 @@ public class TopicManager {
     /**
      * This will prevent the consumers from pulling any more message off the topic they are watching. The opposite of activate.
      *
-     * @param topic
      */
-    public void deactivate(String topic) {
+    public void deactivate() {
 
     }
 
     /**
      * This will enable the consumers to pull messages off the topic they are watching. The opposite of deactivate.
      *
-     * @param topic
      */
-    public void activate(String topic) {
+    public void activate() {
 
     }
 
     /**
      * Replay messages for a given period of time. If both minMillis and maxMillis are present, minMillis must be less or equal maxMillis
      *
-     * @param topic     name of the topic
      * @param minMillis Optional min time in millis (inclusive)
      * @param maxMillis Optional max time in millis (exclusive)
      * @param direction Cursor ascending or descending?
      * @param limit     # of messages to replay
      */
-    public void replay(String topic, OptionalLong minMillis, OptionalLong maxMillis, Direction direction, OptionalInt limit) {
+    public void replay(OptionalLong minMillis, OptionalLong maxMillis, Direction direction, OptionalInt limit) {
 
     }
 
     public static enum Direction {
         ASCENDING,
         DESCENDING
+    }
+
+    /**
+     * This will remove all configuration and data information about a topic. PERMANENTLY!
+     *
+     * BE CAREFUL
+     *
+     */
+    public void nuke() {
+        db.run((Function<Transaction, Void>) tr -> {
+            rmdir(tr, topicConfig.topic);
+            return null;
+        });
     }
 }

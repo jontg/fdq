@@ -45,7 +45,6 @@ public class QueueTest {
         Database db = fdb.open();
 
         Consumer c = new Consumer(db);
-        c.nukeTopic(TOPIC);
         TopicProducer p = new Producer(db).createProducer(TOPIC);
         TopicManager m = new TopicManager(db, p.topicConfig);
 
@@ -58,19 +57,22 @@ public class QueueTest {
 
         log.debug("adding serially");
         long start = System.currentTimeMillis();
-        IntStream.range(0, 100).forEach(i -> p.produce("" + i, ("qwerty " + i).getBytes()));
+        int COUNT1 = 100;
+        int COUNT = COUNT1*2;
+
+        IntStream.range(0, COUNT1).forEach(i -> p.produce("" + i, ("qwerty " + i).getBytes()));
         log.debug("adding serially took " + (System.currentTimeMillis() - start));
 
         log.debug("adding batch");
         start = System.currentTimeMillis();
-        List<MessageRequest> reqs = IntStream.range(0, 100).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
+        List<MessageRequest> reqs = IntStream.range(0, COUNT1).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
         p.produceBatch(reqs);
         log.debug("adding batch took " + (System.currentTimeMillis() - start));
 
         log.debug("waiting for messages");
         start = System.currentTimeMillis();
         while (true) {
-            if (rcvd.size() == 200 && m.runningCount() == 0) {
+            if (rcvd.size() == COUNT && m.runningCount() == 0) {
                 break;
             }
             Thread.sleep(10);
@@ -82,9 +84,11 @@ public class QueueTest {
         log.debug("waiting for messages took " + (System.currentTimeMillis() - start));
 
         assertEquals(0, m.runningCount());
-        assertEquals(200, rcvd.size());
+        assertEquals(COUNT, rcvd.size());
 
         log.debug(m.stats().toString());
+
+        m.nuke();
 
 
 
@@ -102,5 +106,43 @@ public class QueueTest {
 
     }
 
+    @Test
+    public void testErrors() throws InterruptedException {
+        String TOPIC = "" + RANDOM.nextLong();
+        FDB fdb = FDB.selectAPIVersion(300);
+        Database db = fdb.open();
+
+        Consumer c = new Consumer(db);
+        TopicProducer p = new Producer(db).createProducer(TOPIC);
+        TopicManager m = new TopicManager(db, p.topicConfig);
+
+        log.debug("creating consumers");
+        new Thread(() -> c.consume(TOPIC, "a", e -> {throw new RuntimeException("asdf");})).start();
+
+        int COUNT = 5;
+        List<MessageRequest> reqs = IntStream.range(0, COUNT).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
+        p.produceBatch(reqs);
+
+        log.debug("waiting for messages");
+        long start = System.currentTimeMillis();
+        while (true) {
+            if (m.stats().errored == COUNT && m.runningCount() == 0) {
+                break;
+            }
+            Thread.sleep(10);
+            if ((System.currentTimeMillis() - start) > 3000) {
+                log.debug("timed out waiting");
+                break;
+            }
+        }
+        log.debug("waiting for messages took " + (System.currentTimeMillis() - start));
+
+        assertEquals(0, m.runningCount());
+        assertEquals(COUNT, m.stats().errored);
+
+        log.debug(m.stats().toString());
+
+        m.nuke();
+    }
 
 }

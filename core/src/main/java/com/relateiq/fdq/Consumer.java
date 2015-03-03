@@ -27,11 +27,9 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import static com.relateiq.fdq.DirectoryCache.rmdir;
 import static com.relateiq.fdq.Helpers.ONE;
 import static com.relateiq.fdq.Helpers.bytesToMillis;
 import static com.relateiq.fdq.Helpers.currentTimeMillisAsBytes;
-import static com.relateiq.fdq.Helpers.getTopicAssignmentPath;
 import static com.relateiq.fdq.Helpers.intToByteArray;
 
 /**
@@ -49,39 +47,6 @@ public class Consumer {
         this.db = db;
     }
 
-    private void consumerWrapper(ConsumerConfig consumerConfig, Envelope envelope) {
-        boolean isErrored = false;
-        try {
-            long start = System.currentTimeMillis();
-            consumerConfig.consumer.accept(envelope);
-            long duration = System.currentTimeMillis() - start;
-            // log duration
-
-
-        } catch (Exception e) {
-            isErrored = true;
-            // todo: better handling of errors
-            log.error("error during consume", e);
-            // put in error queue
-        } finally {
-            // even if it errors we want to mark it not as running
-            final boolean finalIsErrored = isErrored;
-            db.run((Function<Transaction, Void>) tr -> {
-                tr.clear(consumerConfig.topicConfig.runningData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)));
-                tr.clear(consumerConfig.topicConfig.runningShardKeys.pack(envelope.shardKey));
-
-                if (finalIsErrored){
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricErrored(envelope.shardIndex), ONE);
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricErrored(), ONE);
-                }else {
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricAcked(envelope.shardIndex), ONE);
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricAcked(), ONE);
-                }
-
-                return null;
-            });
-        }
-    }
 
     /**
      *
@@ -279,26 +244,12 @@ public class Consumer {
         return new HeartbeatResult(removedConsumers, newAssignments, isAssignmentsUpdated);
     }
 
-    public void clearAssignments(String topic) {
-        db.run((Function<Transaction, Void>) tr -> {
-            rmdir(tr, getTopicAssignmentPath(topic));
-            return null;
-        });
-    }
-
-    /**
-     * This will remove all configuration and data information about a topic. PERMANENTLY!
-     *
-     * BE CAREFUL
-     *
-     * @param topic
-     */
-    public void nukeTopic(String topic) {
-        db.run((Function<Transaction, Void>) tr -> {
-            rmdir(tr, topic);
-            return null;
-        });
-    }
+//    public void clearAssignments(String topic) {
+//        db.run((Function<Transaction, Void>) tr -> {
+//            rmdir(tr, getTopicAssignmentPath(topic));
+//            return null;
+//        });
+//    }
 
 
 //    private Collection<Integer> removeConsumer(String topic, String name, TopicDirectories directories) {
@@ -430,6 +381,53 @@ public class Consumer {
         }
 
         return true;
+    }
+
+    private void consumerWrapper(ConsumerConfig consumerConfig, Envelope envelope) {
+        boolean isErrored = false;
+        Exception exception = null;
+        try {
+            long start = System.currentTimeMillis();
+            consumerConfig.consumer.accept(envelope);
+            long duration = System.currentTimeMillis() - start;
+            // log duration
+
+
+        } catch (Exception e) {
+            log.error("error during consume, put in errored data folder", e);
+            exception = e;
+        } finally {
+            // even if it errors we want to mark it not as running
+            final Exception finalException = exception;
+            db.run((Function<Transaction, Void>) tr -> {
+                tr.clear(consumerConfig.topicConfig.runningData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)));
+                tr.clear(consumerConfig.topicConfig.runningShardKeys.pack(envelope.shardKey));
+
+                if (finalException != null){
+                    // TODO: full exception stack trace?
+                    tr.set(consumerConfig.topicConfig.erroredData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)), Tuple.from(envelope.shardKey, envelope.message, System.currentTimeMillis(), prettyStackTrace(finalException)).pack());
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricErrored(envelope.shardIndex), ONE);
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricErrored(), ONE);
+                }else {
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricAcked(envelope.shardIndex), ONE);
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricAcked(), ONE);
+                }
+
+                return null;
+            });
+        }
+    }
+
+    private static String prettyStackTrace(Exception e) {
+        StringBuilder sb = new StringBuilder();
+        for (StackTraceElement element : e.getStackTrace()) {
+            sb.append(element.toString()).append("\n");
+            if (element.getMethodName().equals("consumerWrapper")){
+                break;
+            }
+        }
+
+        return sb.toString();
     }
 
     private boolean isMine(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {

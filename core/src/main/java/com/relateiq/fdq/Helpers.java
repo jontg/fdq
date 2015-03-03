@@ -23,12 +23,6 @@ public class Helpers {
     public static final byte[] ONE = intToByteArray(1);
     public static final int MOD_HASH_ITERATIONS_QUEUE_SHARDING = 1;
     public static final int MOD_HASH_ITERATIONS_EXECUTOR_SHARDING = 2;
-    public static final String DIR_METRICS = "metrics";
-    public static final String DIR_CONFIG = "config";
-    public static final String DIR_ASSIGNMENTS = "assignments";
-    public static final String DIR_HEARTBEATS = "heartbeats";
-    public static final String DIR_RUNNING_DATA = "runningData";
-    public static final String DIR_RUNNING_SHARD_KEYS = "runningShardKeys";
 
     private static final HashFunction hashFunction = Hashing.goodFastHash(32);
 
@@ -63,30 +57,6 @@ public class Helpers {
         return Math.abs(result.asInt()) % shards;
     }
 
-    public static String[] getTopicShardDataPath(String topic, Integer shardIndex) {
-        return new String[]{topic, "data", "" + shardIndex};
-    }
-
-    public static String[] getTopicShardMetricPath(String topic, Integer shardIndex) {
-        return new String[]{topic, DIR_METRICS, "" + shardIndex};
-    }
-
-    public static String[] getTopicAssignmentPath(String topic) {
-        return new String[]{topic, DIR_CONFIG, DIR_ASSIGNMENTS};
-    }
-
-    public static String[] getTopicHeartbeatPath(String topic) {
-        return new String[]{topic, DIR_CONFIG, DIR_HEARTBEATS};
-    }
-
-    public static String[] getTopicRunningDataPath(String topic) {
-        return new String[]{topic, DIR_CONFIG, DIR_RUNNING_DATA};
-    }
-
-    public static String[] getTopicRunningShardKeysPath(String topic) {
-        return new String[]{topic, DIR_CONFIG, DIR_RUNNING_SHARD_KEYS};
-    }
-
     public static byte[] currentTimeMillisAsBytes() {
         return ByteBuffer.allocate(8).putLong(System.currentTimeMillis()).array();
     }
@@ -97,18 +67,19 @@ public class Helpers {
 
     public static TopicConfig createTopicConfig(TransactionContext tr, String topic) {
         // init directories
-        DirectorySubspace assignments = mkdirp(tr, getTopicAssignmentPath(topic));
-        DirectorySubspace heartbeats = mkdirp(tr, getTopicHeartbeatPath(topic));
-        DirectorySubspace runningData = mkdirp(tr, getTopicRunningDataPath(topic));
-        DirectorySubspace runningShardKeys = mkdirp(tr, getTopicRunningShardKeysPath(topic));
-        DirectorySubspace topicMetrics = mkdirp(tr, getTopicRunningShardKeysPath(topic));
+        DirectorySubspace assignments = mkdirp(tr, topic, "config", "assignments");
+        DirectorySubspace heartbeats = mkdirp(tr, topic, "config", "heartbeats");
+        DirectorySubspace runningData = mkdirp(tr, topic, "config", "runningData");
+        DirectorySubspace runningShardKeys = mkdirp(tr, topic, "config", "runningShardKeys");
+        DirectorySubspace topicMetrics = mkdirp(tr, topic, "config", "topicMetrics");
+        DirectorySubspace erroredData = mkdirp(tr, topic, "config", "erroredData");
 
         ImmutableMap.Builder<Integer, DirectorySubspace> shardMetrics = ImmutableMap.builder();
         ImmutableMap.Builder<Integer, DirectorySubspace> shardData = ImmutableMap.builder();
         for (int i = 0; i < TopicConfig.DEFAULT_NUM_SHARDS; i++) {
-            shardMetrics.put(i, mkdirp(tr, getTopicShardMetricPath(topic, i)));
-            shardData.put(i, mkdirp(tr, getTopicShardDataPath(topic, i)));
+            shardMetrics.put(i, mkdirp(tr, topic, "metrics", "" + (Integer) i));
+            shardData.put(i, mkdirp(tr, topic, "data", "" + (Integer) i));
         }
-        return new TopicConfig(topic, assignments, heartbeats, topicMetrics, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
+        return new TopicConfig(topic, assignments, heartbeats, topicMetrics, erroredData, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
     }
 }

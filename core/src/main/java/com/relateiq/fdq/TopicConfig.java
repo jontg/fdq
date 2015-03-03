@@ -2,10 +2,8 @@ package com.relateiq.fdq;
 
 import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
-import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
 
 /**
  * Created by mbessler on 2/23/15.
@@ -26,6 +24,9 @@ public class TopicConfig {
     public final DirectorySubspace heartbeats;
     public final DirectorySubspace topicMetrics;
 
+
+    public final DirectorySubspace erroredData;
+
     /**
      * To prevent losing messages that have been popped but not acked we track which are currently running here
      * where the value is the pop time
@@ -43,11 +44,12 @@ public class TopicConfig {
     public final int numShards = DEFAULT_NUM_SHARDS;
 
 
-    public TopicConfig(String topic, DirectorySubspace assignments, DirectorySubspace heartbeats, DirectorySubspace topicMetrics, DirectorySubspace runningData, DirectorySubspace runningShardKeys, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData) {
+    public TopicConfig(String topic, DirectorySubspace assignments, DirectorySubspace heartbeats, DirectorySubspace topicMetrics, DirectorySubspace erroredData, DirectorySubspace runningData, DirectorySubspace runningShardKeys, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData) {
         this.topic = topic;
         this.assignments = assignments;
         this.heartbeats = heartbeats;
         this.topicMetrics = topicMetrics;
+        this.erroredData = erroredData;
         this.runningShardKeys = runningShardKeys;
         this.shardMetrics = shardMetrics;
         this.shardData = shardData;
