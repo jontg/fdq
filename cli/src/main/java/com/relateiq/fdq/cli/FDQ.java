@@ -3,7 +3,11 @@ package com.relateiq.fdq.cli;
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
 import com.relateiq.fdq.Consumer;
+import com.relateiq.fdq.Helpers;
 import com.relateiq.fdq.Producer;
+import com.relateiq.fdq.TopicConfig;
+import com.relateiq.fdq.TopicManager;
+import com.relateiq.fdq.TopicProducer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,7 +36,21 @@ public class FDQ {
             case "consume":
                 consume();
                 break;
+            case "status":
+                status();
+                break;
         }
+    }
+
+    private static void status() {
+        String TOPIC = "testTopic";
+        FDB fdb = FDB.selectAPIVersion(300);
+        Database db = fdb.open();
+        TopicManager manager = new TopicManager(db, Helpers.createTopicConfig(db, TOPIC));
+
+        System.out.println("Status for: " + TOPIC);
+        System.out.println();
+        System.out.println("# running: " + manager.runningCount());
     }
 
     private static void produceRandom() {
@@ -40,10 +58,10 @@ public class FDQ {
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
 
-        Producer p = new Producer(db);
+        TopicProducer p = new Producer(db).createProducer(TOPIC);
 
         while (true) {
-            p.produce(TOPIC, Long.toString(random.nextLong()), Long.toString(random.nextLong()).getBytes());
+            p.produce(Long.toString(random.nextLong()), Long.toString(random.nextLong()).getBytes());
             try {
                 Thread.sleep(10);
             } catch (InterruptedException e) {
@@ -69,7 +87,7 @@ public class FDQ {
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
 
-        Producer p = new Producer(db);
+        TopicProducer p = new Producer(db).createProducer(TOPIC);
 
         Scanner in = new Scanner(System.in);
         try {
@@ -78,7 +96,7 @@ public class FDQ {
                 String[] parts = s.split(" ", 2);
                 String shardKey = parts[0];
                 String message = parts[1];
-                p.produce(TOPIC, shardKey, message.getBytes());
+                p.produce(shardKey, message.getBytes());
             }
         } catch (IOException e) {
             e.printStackTrace();

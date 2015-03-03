@@ -2,6 +2,7 @@ package com.relateiq.fdq;
 
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
+import com.foundationdb.Transaction;
 import com.google.common.collect.ConcurrentHashMultiset;
 import com.google.common.collect.Multiset;
 import org.junit.Test;
@@ -46,6 +47,7 @@ public class QueueTest {
         Consumer c = new Consumer(db);
         c.nukeTopic(TOPIC);
         TopicProducer p = new Producer(db).createProducer(TOPIC);
+        TopicManager m = new TopicManager(db, p.topicConfig);
 
         Multiset<String> rcvd = ConcurrentHashMultiset.create();
 
@@ -68,7 +70,7 @@ public class QueueTest {
         log.debug("waiting for messages");
         start = System.currentTimeMillis();
         while (true) {
-            if (rcvd.size() == 200) {
+            if (rcvd.size() == 200 && m.runningCount() == 0) {
                 break;
             }
             Thread.sleep(10);
@@ -79,7 +81,10 @@ public class QueueTest {
         }
         log.debug("waiting for messages took " + (System.currentTimeMillis() - start));
 
+        assertEquals(0, m.runningCount());
         assertEquals(200, rcvd.size());
+
+        log.debug(m.stats().toString());
 
 
 

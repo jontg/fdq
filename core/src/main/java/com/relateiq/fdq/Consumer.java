@@ -2,6 +2,7 @@ package com.relateiq.fdq;
 
 import com.foundationdb.Database;
 import com.foundationdb.KeyValue;
+import com.foundationdb.MutationType;
 import com.foundationdb.Range;
 import com.foundationdb.Transaction;
 import com.foundationdb.async.Function;
@@ -27,9 +28,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static com.relateiq.fdq.DirectoryCache.rmdir;
+import static com.relateiq.fdq.Helpers.ONE;
 import static com.relateiq.fdq.Helpers.bytesToMillis;
 import static com.relateiq.fdq.Helpers.currentTimeMillisAsBytes;
 import static com.relateiq.fdq.Helpers.getTopicAssignmentPath;
+import static com.relateiq.fdq.Helpers.intToByteArray;
 
 /**
  * Created by mbessler on 2/6/15.
@@ -47,13 +50,36 @@ public class Consumer {
     }
 
     private void consumerWrapper(ConsumerConfig consumerConfig, Envelope envelope) {
+        boolean isErrored = false;
         try {
+            long start = System.currentTimeMillis();
             consumerConfig.consumer.accept(envelope);
-//            db.run((Function<Transaction, Void>) tr -> tr.clear(consumerConfig.runningData.pack()));
+            long duration = System.currentTimeMillis() - start;
+            // log duration
+
+
         } catch (Exception e) {
+            isErrored = true;
             // todo: better handling of errors
             log.error("error during consume", e);
             // put in error queue
+        } finally {
+            // even if it errors we want to mark it not as running
+            final boolean finalIsErrored = isErrored;
+            db.run((Function<Transaction, Void>) tr -> {
+                tr.clear(consumerConfig.topicConfig.runningData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)));
+                tr.clear(consumerConfig.topicConfig.runningShardKeys.pack(envelope.shardKey));
+
+                if (finalIsErrored){
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricErrored(envelope.shardIndex), ONE);
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricErrored(), ONE);
+                }else {
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricAcked(envelope.shardIndex), ONE);
+                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricAcked(), ONE);
+                }
+
+                return null;
+            });
         }
     }
 
@@ -310,39 +336,67 @@ public class Consumer {
             // FETCH SOME TUPLES
             DirectorySubspace dataDir = consumerConfig.topicConfig.shardData.get(shardIndex);
             List<Envelope> result = new ArrayList<>();
-            int numFound = 0;
-            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()), consumerConfig.batchSize)) {
-                numFound++;
-                tr.addReadConflictKey(keyValue.getKey());
-                tr.clear(keyValue.getKey());
+            int numPopped = 0;
+            int numSkipped = 0;
+            int numErrored = 0;
 
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()), consumerConfig.batchSize)) {
                 try {
 
-                    Tuple key = dataDir.unpack(keyValue.getKey());
+                    // Deserialize key
                     Tuple value = Tuple.fromBytes(keyValue.getValue());
-//                log.debug("kv: " + key.getLong(2) + " " + key.getLong(3) + " : " + new String(keyValue.getValue()));
-                    long insertionTime = key.getLong(0);
-
                     String shardKey = value.getString(0);
+                    byte[] runningShardKey = consumerConfig.topicConfig.runningShardKeys.pack(shardKey);
+
+                    // ensure we aren't executing messages with the same shard key concurrently
+                    boolean isRunning = null != tr.get(runningShardKey).get();
+                    if (isRunning) {
+                        numSkipped++;
+                        continue;
+                    }
+
+                    Tuple key = dataDir.unpack(keyValue.getKey());
+                    long insertionTime = key.getLong(0);
+                    int randomInt = (int) key.getLong(1);
+
                     byte[] message = value.getBytes(1);
+
+                    tr.clear(keyValue.getKey());
+                    tr.addReadConflictKey(keyValue.getKey());
+                    numPopped++;
+
                     int executorIndex = Helpers.modHash(shardKey, consumerConfig.numExecutors, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
-                    Envelope envelope = new Envelope(insertionTime, shardKey, shardIndex, executorIndex, message);
+                    Envelope envelope = new Envelope(insertionTime, randomInt, shardKey, shardIndex, executorIndex, message);
                     result.add(envelope);
 
                     // log that we are running this shardkey and tuple
-//                    Long fetchTime = System.currentTimeMillis();
-//                    tr.set(consumerConfig.runningShardKeys.pack(shardKey), Tuple.from(fetchTime).pack());
-//                    tr.set(consumerConfig.runningData.pack(key), Tuple.from(fetchTime).pack());
-                } catch (Exception e){
+                    Long popTime = System.currentTimeMillis();
+                    tr.set(runningShardKey, Tuple.from(popTime).pack());
+                    tr.set(consumerConfig.topicConfig.runningData.pack(key), Tuple.from(popTime).pack());
+
+                } catch (Exception e) {
                     // issue with deserialization
+                    tr.clear(keyValue.getKey());
                     log.warn("swallowed error during consume, lost message", e);
+                    numErrored++;
                 }
             }
 
-            if (numFound < BATCH_SIZE) {
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricPopped(shardIndex), intToByteArray(numPopped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricSkipped(shardIndex), intToByteArray(numSkipped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricPopped(), intToByteArray(numPopped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricSkipped(), intToByteArray(numSkipped));
+            // this type of deser error is an internal error and very unexpected, not incrementing error metric, thats for consumer function errors
+
+            if (numPopped < BATCH_SIZE && numSkipped == 0 && numErrored == 0) {
                 // exhausted
                 byte[] topicWatchKey = consumerConfig.topicConfig.shardMetricInserted(shardIndex);
                 return new ConsumeWorkResult(tr.watch(topicWatchKey), result, true);
+            }
+
+            if (numPopped + numErrored == 0 && numSkipped == BATCH_SIZE){
+                // TODO: pop some more next time so we don't keep spinning on these
+                log.warn("Whole batch was skipped for " + consumerConfig.toString());
             }
 
 

@@ -1,6 +1,5 @@
 package com.relateiq.fdq;
 
-import com.foundationdb.Transaction;
 import com.foundationdb.TransactionContext;
 import com.foundationdb.directory.DirectorySubspace;
 import com.google.common.collect.ImmutableMap;
@@ -32,6 +31,20 @@ public class Helpers {
     public static final String DIR_RUNNING_SHARD_KEYS = "runningShardKeys";
 
     private static final HashFunction hashFunction = Hashing.goodFastHash(32);
+
+    public static int toInt(byte[] in){
+        if (in == null){ return 0;}
+        ByteBuffer bb = ByteBuffer.wrap(in);
+        bb.order( ByteOrder.LITTLE_ENDIAN);
+        return bb.getInt();
+    }
+
+    public static long toLong(byte[] in){
+        if (in == null){ return 0l;}
+        ByteBuffer bb = ByteBuffer.wrap(in);
+        bb.order( ByteOrder.LITTLE_ENDIAN);
+        return bb.getLong();
+    }
 
     public static byte[] intToByteArray(int i) {
         final ByteBuffer bb = ByteBuffer.allocate(Integer.SIZE / Byte.SIZE);
@@ -82,12 +95,13 @@ public class Helpers {
         return ByteBuffer.wrap(in).getLong();
     }
 
-    static TopicConfig createTopicConfig(TransactionContext tr, String topic) {
+    public static TopicConfig createTopicConfig(TransactionContext tr, String topic) {
         // init directories
         DirectorySubspace assignments = mkdirp(tr, getTopicAssignmentPath(topic));
         DirectorySubspace heartbeats = mkdirp(tr, getTopicHeartbeatPath(topic));
         DirectorySubspace runningData = mkdirp(tr, getTopicRunningDataPath(topic));
         DirectorySubspace runningShardKeys = mkdirp(tr, getTopicRunningShardKeysPath(topic));
+        DirectorySubspace topicMetrics = mkdirp(tr, getTopicRunningShardKeysPath(topic));
 
         ImmutableMap.Builder<Integer, DirectorySubspace> shardMetrics = ImmutableMap.builder();
         ImmutableMap.Builder<Integer, DirectorySubspace> shardData = ImmutableMap.builder();
@@ -95,6 +109,6 @@ public class Helpers {
             shardMetrics.put(i, mkdirp(tr, getTopicShardMetricPath(topic, i)));
             shardData.put(i, mkdirp(tr, getTopicShardDataPath(topic, i)));
         }
-        return new TopicConfig(topic, assignments, heartbeats, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
+        return new TopicConfig(topic, assignments, heartbeats, topicMetrics, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
     }
 }

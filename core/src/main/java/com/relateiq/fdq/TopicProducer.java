@@ -5,7 +5,9 @@ import com.foundationdb.MutationType;
 import com.foundationdb.Transaction;
 import com.foundationdb.async.Function;
 import com.foundationdb.tuple.Tuple;
+import com.google.common.collect.HashMultiset;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Multiset;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,7 +15,7 @@ import java.util.Collection;
 import java.util.Random;
 
 import static com.relateiq.fdq.Helpers.MOD_HASH_ITERATIONS_QUEUE_SHARDING;
-import static com.relateiq.fdq.Helpers.ONE;
+import static com.relateiq.fdq.Helpers.intToByteArray;
 import static com.relateiq.fdq.Helpers.modHash;
 
 /**
@@ -25,7 +27,7 @@ public class TopicProducer {
     private final Random random = new Random();
 
     private final Database db;
-    private final TopicConfig topicConfig;
+    final TopicConfig topicConfig;
 
     public TopicProducer(Database db, TopicConfig topicConfig) {
         this.db = db;
@@ -48,6 +50,7 @@ public class TopicProducer {
      */
     public void produceBatch(final Collection<MessageRequest> messageRequests) {
         db.run((Function<Transaction, Void>) tr -> {
+            Multiset<Integer> insertedPerShardIndex = HashMultiset.create();
             for (MessageRequest messageRequest : messageRequests) {
                 Integer shardIndex = modHash(messageRequest.shardKey, topicConfig.numShards, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
 
@@ -56,8 +59,14 @@ public class TopicProducer {
                 }
 
                 // TODO: ensure monotonic
-                tr.set(topicConfig.shardData.get(shardIndex).pack(Tuple.from(System.currentTimeMillis(), random.nextInt())), Tuple.from(messageRequest.shardKey, messageRequest.message).pack());
-                tr.mutate(MutationType.ADD, topicConfig.shardMetricInserted(shardIndex), ONE);
+                tr.set(topicConfig.messageKey(shardIndex, System.currentTimeMillis(), random.nextInt()), Tuple.from(messageRequest.shardKey, messageRequest.message).pack());
+                insertedPerShardIndex.add(shardIndex);
+            }
+
+            tr.mutate(MutationType.ADD, topicConfig.topicMetricInserted(), intToByteArray(messageRequests.size()));
+
+            for (Multiset.Entry<Integer> entry : insertedPerShardIndex.entrySet()) {
+                tr.mutate(MutationType.ADD, topicConfig.shardMetricInserted(entry.getElement()), intToByteArray(entry.getCount()));
             }
             return null;
         });
