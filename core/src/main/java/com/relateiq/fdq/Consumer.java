@@ -321,14 +321,14 @@ public class Consumer {
 
         for (Envelope envelope : workResult.fetched) {
             if (log.isTraceEnabled()) {
-                log.trace("Submitting to executorOuter " + consumerConfig.toString() + " " + envelope.toString());
+                log.trace("Submitting to executor " + consumerConfig.toString() + " " + envelope.toString());
             }
 
             consumerConfig.executorOuter.submit(() -> consumeEnvelope(consumerConfig, envelope));
         }
 
         if (workResult.watch != null) {
-            log.debug("Exhausted queue, watching, executorOuter topic=" + consumerConfig.toString() + " shardIndex=" + shardIndex);
+            log.debug("Exhausted queue, watching, topic=" + consumerConfig.toString() + " shardIndex=" + shardIndex);
             workResult.watch.get();
         } else {
             //optionally sleep

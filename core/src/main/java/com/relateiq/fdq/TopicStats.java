@@ -43,4 +43,21 @@ public class TopicStats {
         this.running = popped - acked;
     }
 
+    @Override
+    public String toString() {
+        return "TopicStats{" +
+                "name='" + name + '\'' +
+                ", inserted=" + inserted +
+                ", acked=" + acked +
+                ", acked_duration=" + acked_duration +
+                ", errored=" + errored +
+                ", errored_duration=" + errored_duration +
+                ", timed_out=" + timed_out +
+                ", popped=" + popped +
+                ", running=" + running +
+                ", assignments=" + assignments +
+                ", errored_duration_avg=" + errored_duration_avg +
+                ", acked_duration_avg=" + acked_duration_avg +
+                '}';
+    }
 }

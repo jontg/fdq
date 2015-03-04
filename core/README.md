@@ -60,21 +60,22 @@ class Envelope {
   String shardKey;
   byte[] message;
   int shardIndex;
-  int executorIndex;
 }
 ```
 
 An instance of a Consumer, maintains client configuration state and provides lifecycle methods.
 
 ```java
-void consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer);
+ConsumerConfig createConsumer(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer);
 ```
 
 Create a Consumer to tail a topic. (future: other configuration)
 
 ## How it works
 
-Pushing a message writes a message to the appropriate shard queue given the `shardKey` for a given topic, along with the epoch millis of insertion time and a random string to prevent write conflicts. Further all messages are written to the All "shard" for replayability purposes.
+Pushing a message writes a message to the appropriate shard queue given the `shardKey` for a given topic, along with the epoch millis of insertion time and a random string to prevent write conflicts.
+
+*TODO* Further all messages are written to the All "shard" for replayability purposes.
 
 ### Pushing a message
 
@@ -86,7 +87,7 @@ Pushing a message writes a message to the appropriate shard queue given the `sha
 
 ### Adding a consumer
 
-1. Create a new consumer by calling `consume(...)` on a Consumer object
+1. Create a new consumer by calling `createConsumer(...)` on a Consumer object
 1. Update assignments to give some shards to this new Consumer
 
 ### Removing a consumer
