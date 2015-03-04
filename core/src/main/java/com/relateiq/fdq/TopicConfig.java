@@ -1,9 +1,14 @@
 package com.relateiq.fdq;
 
+import com.foundationdb.MutationType;
+import com.foundationdb.Transaction;
 import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
 
 import java.util.Map;
+
+import static com.relateiq.fdq.Helpers.ONE;
+import static com.relateiq.fdq.Helpers.intToByteArray;
 
 /**
  * Created by mbessler on 2/23/15.
@@ -16,7 +21,10 @@ public class TopicConfig {
     public static final String METRIC_POPPED = "popped";
     public static final String METRIC_ACKED = "acked";
     public static final String METRIC_ERRORED = "errored";
-    private static final String METRIC_SKIPPED = "skipped";
+    public static final String METRIC_SKIPPED = "skipped";
+    public static final String METRIC_TIMED_OUT = "timedOut";
+    public static final String METRIC_ERRORED_DURATION = "erroredDuration";
+    public static final String METRIC_ACKED_DURATION = "ackedDuration";
 
     public final String topic;
 
@@ -56,47 +64,43 @@ public class TopicConfig {
         this.runningData = runningData;
     }
 
-    public byte[] shardMetricInserted(Integer shardIndex) {
-        return shardMetrics.get(shardIndex).pack(Tuple.from(METRIC_INSERTED));
+    public byte[] shardMetric(Integer shardIndex, String metricName) {
+        return shardMetrics.get(shardIndex).pack(Tuple.from(metricName));
     }
 
-    public byte[] shardMetricAcked(Integer shardIndex) {
-        return shardMetrics.get(shardIndex).pack(Tuple.from(METRIC_ACKED));
-    }
-
-    public byte[] shardMetricErrored(Integer shardIndex) {
-        return shardMetrics.get(shardIndex).pack(Tuple.from(METRIC_ERRORED));
-    }
-
-    public byte[] shardMetricPopped(Integer shardIndex) {
-        return shardMetrics.get(shardIndex).pack(Tuple.from(METRIC_POPPED));
-    }
-
-    public byte[] shardMetricSkipped(Integer shardIndex) {
-        return shardMetrics.get(shardIndex).pack(Tuple.from(METRIC_SKIPPED));
-    }
-
-    public byte[] topicMetricInserted() {
+    public byte[] metricInserted() {
         return topicMetrics.pack(Tuple.from(METRIC_INSERTED));
     }
 
-    public byte[] topicMetricAcked() {
-        return topicMetrics.pack(Tuple.from(METRIC_ACKED));
+    public byte[] metricAcked() {
+        return metric(METRIC_ACKED);
     }
 
-    public byte[] topicMetricErrored() {
+    public byte[] metric(String metricName) {
+        return topicMetrics.pack(Tuple.from(metricName));
+    }
+
+    public byte[] metricAckedDuration() {
+        return topicMetrics.pack(Tuple.from(METRIC_ACKED_DURATION));
+    }
+
+    public byte[] metricErrored() {
         return topicMetrics.pack(Tuple.from(METRIC_ERRORED));
     }
 
-    public byte[] topicMetricSkipped() {
+    public byte[] metricErroredDuration() {
+        return topicMetrics.pack(Tuple.from(METRIC_ERRORED_DURATION));
+    }
+
+    public byte[] metricSkipped() {
         return topicMetrics.pack(Tuple.from(METRIC_SKIPPED));
     }
 
-    public byte[] topicMetricPopped() {
+    public byte[] metricPopped() {
         return topicMetrics.pack(Tuple.from(METRIC_POPPED));
     }
 
-    public byte[] getTopicAssignmentsKey(Integer shardIndex) {
+    public byte[] shardAssignmentKey(Integer shardIndex) {
         return assignments.pack(shardIndex);
     }
 
@@ -109,5 +113,21 @@ public class TopicConfig {
 
     byte[] messageKey(Integer shardIndex, long insertionTime, int randomInt) {
         return shardData.get(shardIndex).pack(Tuple.from(insertionTime, randomInt));
+    }
+
+    public void incShardMetric(Transaction tr, int shardIndex, String metricName) {
+        tr.mutate(MutationType.ADD, shardMetric(shardIndex, metricName), ONE);
+    }
+
+    public void incShardMetric(Transaction tr, int shardIndex, String metricName, int amount) {
+        tr.mutate(MutationType.ADD, shardMetric(shardIndex, metricName), intToByteArray(amount));
+    }
+
+    public void incMetric(Transaction tr, String metricName) {
+        tr.mutate(MutationType.ADD, metric(metricName), ONE);
+    }
+
+    public void incMetric(Transaction tr, String metricName, int amount) {
+        tr.mutate(MutationType.ADD, metric(metricName), intToByteArray(amount));
     }
 }

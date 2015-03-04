@@ -4,7 +4,6 @@ import com.foundationdb.Database;
 import com.foundationdb.Range;
 import com.foundationdb.Transaction;
 import com.foundationdb.async.Function;
-import com.foundationdb.tuple.Tuple;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,7 +12,7 @@ import java.util.OptionalLong;
 
 import static com.relateiq.fdq.DirectoryCache.rmdir;
 import static com.relateiq.fdq.Helpers.toInt;
-import static com.relateiq.fdq.Helpers.toLong;
+import static com.relateiq.fdq.TopicConfig.*;
 
 /**
  * Created by mbessler on 2/25/15.
@@ -36,17 +35,20 @@ public class TopicManager {
     public TopicStats stats() {
         return db.run((Function<Transaction, TopicStats>) tr ->
                         new TopicStats(topicConfig.topic
-                                , toInt(tr.get(topicConfig.topicMetricInserted()).get())
-                                , toInt(tr.get(topicConfig.topicMetricAcked()).get())
-                                , toInt(tr.get(topicConfig.topicMetricErrored()).get())
-                                , toInt(tr.get(topicConfig.topicMetricPopped()).get())
+                                , Helpers.fetchAssignments(tr, topicConfig.assignments)
+                                , toInt(tr.get(topicConfig.metric(METRIC_INSERTED)).get())
+                                , toInt(tr.get(topicConfig.metric(METRIC_ACKED)).get())
+                                , toInt(tr.get(topicConfig.metric(METRIC_ACKED_DURATION)).get())
+                                , toInt(tr.get(topicConfig.metric(METRIC_ERRORED)).get())
+                                , toInt(tr.get(topicConfig.metric(METRIC_ERRORED_DURATION)).get())
+                                , toInt(tr.get(topicConfig.metric(METRIC_TIMED_OUT)).get())
+                                , toInt(tr.get(topicConfig.metric(METRIC_POPPED)).get())
                         )
         );
     }
 
     /**
      * This will prevent the consumers from pulling any more message off the topic they are watching. The opposite of activate.
-     *
      */
     public void deactivate() {
 
@@ -54,7 +56,6 @@ public class TopicManager {
 
     /**
      * This will enable the consumers to pull messages off the topic they are watching. The opposite of deactivate.
-     *
      */
     public void activate() {
 
@@ -72,21 +73,20 @@ public class TopicManager {
 
     }
 
-    public static enum Direction {
-        ASCENDING,
-        DESCENDING
-    }
-
     /**
      * This will remove all configuration and data information about a topic. PERMANENTLY!
-     *
+     * <p>
      * BE CAREFUL
-     *
      */
     public void nuke() {
         db.run((Function<Transaction, Void>) tr -> {
             rmdir(tr, topicConfig.topic);
             return null;
         });
+    }
+
+    public static enum Direction {
+        ASCENDING,
+        DESCENDING
     }
 }

@@ -1,8 +1,13 @@
 package com.relateiq.fdq;
 
+import com.foundationdb.KeyValue;
+import com.foundationdb.Range;
+import com.foundationdb.Transaction;
 import com.foundationdb.TransactionContext;
 import com.foundationdb.directory.DirectorySubspace;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.Multimap;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
@@ -81,5 +86,23 @@ public class Helpers {
             shardData.put(i, mkdirp(tr, topic, "data", "" + (Integer) i));
         }
         return new TopicConfig(topic, assignments, heartbeats, topicMetrics, erroredData, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
+    }
+
+    /**
+     *
+     * @param tr the transaction
+     * @param topicAssignmentDirectory
+     * @return the assignments, a multimap of shardIndexes indexed by consumerName
+     */
+    public static Multimap<String, Integer> fetchAssignments(Transaction tr, DirectorySubspace topicAssignmentDirectory) {
+        ImmutableMultimap.Builder<String, Integer> builder = ImmutableMultimap.builder();
+
+        for (KeyValue keyValue : tr.getRange(Range.startsWith(topicAssignmentDirectory.pack()))) {
+            Integer shardIndex = (int) topicAssignmentDirectory.unpack(keyValue.getKey()).getLong(0);
+            String consumerName = new String(keyValue.getValue(), CHARSET);
+            builder.put(consumerName, shardIndex);
+        }
+
+        return builder.build();
     }
 }

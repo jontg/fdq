@@ -26,7 +26,6 @@
             <version>1.7.2</version>
         </dependency>
 
-        <!-- eventually should shade the parts we use probably -->
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
@@ -88,12 +87,12 @@
 
                     <minimizeJar>true</minimizeJar>
 
-                    <relocations>
-                        <relocation>
-                            <pattern>com.google.common</pattern>
-                            <shadedPattern>shaded.com.google.common</shadedPattern>
-                        </relocation>
-                    </relocations>
+                    <!--<relocations>-->
+                        <!--<relocation>-->
+                            <!--<pattern>com.google.common</pattern>-->
+                            <!--<shadedPattern>shaded.com.google.common</shadedPattern>-->
+                        <!--</relocation>-->
+                    <!--</relocations>-->
                     <filters>
                         <filter>
                             <artifact>*:*</artifact>

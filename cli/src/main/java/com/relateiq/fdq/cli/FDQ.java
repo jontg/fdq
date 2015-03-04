@@ -1,9 +1,13 @@
 package com.relateiq.fdq.cli;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.guava.GuavaModule;
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
 import com.relateiq.fdq.Consumer;
 import com.relateiq.fdq.Helpers;
+import com.relateiq.fdq.MessageRequest;
 import com.relateiq.fdq.Producer;
 import com.relateiq.fdq.TopicConfig;
 import com.relateiq.fdq.TopicManager;
@@ -14,8 +18,12 @@ import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.List;
 import java.util.Random;
 import java.util.Scanner;
+import java.util.stream.IntStream;
+
+import static java.util.stream.Collectors.toList;
 
 /**
  * Created by mbessler on 2/23/15.
@@ -24,7 +32,7 @@ public class FDQ {
     public static final Logger log = LoggerFactory.getLogger(FDQ.class);
     private static final Random random = new Random();
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws JsonProcessingException {
 
         switch (args[0]) {
             case "produce":
@@ -39,18 +47,30 @@ public class FDQ {
             case "status":
                 status();
                 break;
+            case "nuke":
+                nuke();
+                break;
         }
     }
 
-    private static void status() {
+    private static void nuke() {
         String TOPIC = "testTopic";
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
         TopicManager manager = new TopicManager(db, Helpers.createTopicConfig(db, TOPIC));
 
-        System.out.println("Status for: " + TOPIC);
-        System.out.println();
-        System.out.println("# running: " + manager.runningCount());
+        manager.nuke();
+    }
+
+    private static void status() throws JsonProcessingException {
+        String TOPIC = "testTopic";
+        FDB fdb = FDB.selectAPIVersion(300);
+        Database db = fdb.open();
+        TopicManager manager = new TopicManager(db, Helpers.createTopicConfig(db, TOPIC));
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new GuavaModule());
+
+        System.out.println(mapper.writeValueAsString(manager.stats()));
     }
 
     private static void produceRandom() {
@@ -61,12 +81,15 @@ public class FDQ {
         TopicProducer p = new Producer(db).createProducer(TOPIC);
 
         while (true) {
-            p.produce(Long.toString(random.nextLong()), Long.toString(random.nextLong()).getBytes());
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                break;
-            }
+            List<MessageRequest> reqs = IntStream.range(0, 1000).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
+            p.produceBatch(reqs);
+
+//            p.produce(Long.toString(random.nextLong()), Long.toString(random.nextLong()).getBytes());
+//            try {
+//                Thread.sleep(10);
+//            } catch (InterruptedException e) {
+//                break;
+//            }
 
         }
     }
@@ -78,7 +101,12 @@ public class FDQ {
 
         Consumer c = new Consumer(db);
 
-        c.consume("testTopic", "" + (new Random()).nextLong(), e -> System.out.println(e.toString() + " " + new String(e.message)));
+        c.consume("testTopic", "" + (new Random()).nextLong(), e -> {
+            try {
+                Thread.sleep(new Random().nextInt(6000));
+            } catch (InterruptedException e1) {
+            }
+            System.out.println(e.toString() + " " + new String(e.message));});
 
     }
 

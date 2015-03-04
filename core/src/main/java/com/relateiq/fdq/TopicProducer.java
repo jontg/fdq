@@ -36,7 +36,7 @@ public class TopicProducer {
 
     /**
      * Enqueue messages into a topic
-     * @param shardKey the key used to consistently route this message to the same executor/thread (via the same consumer)
+     * @param shardKey the key used to consistently route this message to the same executorOuter/thread (via the same consumer)
      * @param message the actual message
      */
     public void produce(final String shardKey, final byte[] message) {
@@ -63,10 +63,10 @@ public class TopicProducer {
                 insertedPerShardIndex.add(shardIndex);
             }
 
-            tr.mutate(MutationType.ADD, topicConfig.topicMetricInserted(), intToByteArray(messageRequests.size()));
+            tr.mutate(MutationType.ADD, topicConfig.metricInserted(), intToByteArray(messageRequests.size()));
 
             for (Multiset.Entry<Integer> entry : insertedPerShardIndex.entrySet()) {
-                tr.mutate(MutationType.ADD, topicConfig.shardMetricInserted(entry.getElement()), intToByteArray(entry.getCount()));
+                tr.mutate(MutationType.ADD, topicConfig.shardMetric(entry.getElement(), TopicConfig.METRIC_INSERTED), intToByteArray(entry.getCount()));
             }
             return null;
         });

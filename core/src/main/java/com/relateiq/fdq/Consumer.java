@@ -11,7 +11,6 @@ import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import org.slf4j.Logger;
@@ -22,15 +21,23 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import static com.relateiq.fdq.Helpers.ONE;
 import static com.relateiq.fdq.Helpers.bytesToMillis;
 import static com.relateiq.fdq.Helpers.currentTimeMillisAsBytes;
 import static com.relateiq.fdq.Helpers.intToByteArray;
+import static com.relateiq.fdq.TopicConfig.METRIC_ACKED;
+import static com.relateiq.fdq.TopicConfig.METRIC_ACKED_DURATION;
+import static com.relateiq.fdq.TopicConfig.METRIC_ERRORED;
+import static com.relateiq.fdq.TopicConfig.METRIC_ERRORED_DURATION;
+import static com.relateiq.fdq.TopicConfig.METRIC_TIMED_OUT;
 
 /**
  * Created by mbessler on 2/6/15.
@@ -38,7 +45,6 @@ import static com.relateiq.fdq.Helpers.intToByteArray;
 public class Consumer {
     public static final Logger log = LoggerFactory.getLogger(Consumer.class);
     public static final int CONSUMER_TIMEOUT_MILLIS = 5000;
-    public static final int BATCH_SIZE = 10;
     public static final int EXECUTOR_QUEUE_SIZE = 1000;
     private static final byte[] NULL = {0};
     private final Database db;
@@ -47,23 +53,23 @@ public class Consumer {
         this.db = db;
     }
 
-
-    /**
-     *
-     * @param tr the transaction
-     * @param topicAssignmentDirectory
-     * @return the assignments, a multimap of shardIndexes indexed by consumerName
-     */
-    Multimap<String, Integer> fetchAssignments(Transaction tr, DirectorySubspace topicAssignmentDirectory) {
-        ImmutableMultimap.Builder<String, Integer> builder = ImmutableMultimap.builder();
-
-        for (KeyValue keyValue : tr.getRange(Range.startsWith(topicAssignmentDirectory.pack()))) {
-            Integer shardIndex = (int) topicAssignmentDirectory.unpack(keyValue.getKey()).getLong(0);
-            String consumerName = new String(keyValue.getValue(), Helpers.CHARSET);
-            builder.put(consumerName, shardIndex);
+    private static String prettyStackTrace(Exception e) {
+        StringBuilder sb = new StringBuilder();
+        for (StackTraceElement element : e.getStackTrace()) {
+            sb.append(element.toString()).append("\n");
+            if (element.getMethodName().equals("consumerWrapper")) {
+                break;
+            }
         }
 
-        return builder.build();
+        return sb.toString();
+    }
+
+    private static <T> T timedCall(ExecutorService executor, Callable<T> c, long timeout, TimeUnit timeUnit)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        FutureTask<T> task = new FutureTask<T>(c);
+        executor.execute(task);
+        return task.get(timeout, timeUnit);
     }
 
     /**
@@ -74,7 +80,7 @@ public class Consumer {
      * @return
      */
     private Optional<String> fetchAssignment(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
-        byte[] bytes = tr.get(consumerConfig.topicConfig.getTopicAssignmentsKey(shardIndex)).get();
+        byte[] bytes = tr.get(consumerConfig.topicConfig.shardAssignmentKey(shardIndex)).get();
         if (bytes == null) {
             return Optional.empty();
         }
@@ -84,12 +90,12 @@ public class Consumer {
     void saveAssignments(Transaction tr, ConsumerConfig consumerConfig, Multimap<String, Integer> assignments) {
         for (Map.Entry<String, Collection<Integer>> entry : assignments.asMap().entrySet()) {
             for (Integer integer : entry.getValue()) {
-                tr.set(consumerConfig.topicConfig.getTopicAssignmentsKey(integer), entry.getKey().getBytes(Helpers.CHARSET));
+                tr.set(consumerConfig.topicConfig.shardAssignmentKey(integer), entry.getKey().getBytes(Helpers.CHARSET));
             }
         }
     }
 
-    public void consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
+    public ConsumerConfig consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
         ConsumerConfig consumerConfig = initConsumer(topic, consumerName, consumer);
 
         // start heartbeat thread
@@ -108,6 +114,7 @@ public class Consumer {
             }
         }).start();
 
+        return consumerConfig;
     }
 
     private void ensureShardThreads(ConsumerConfig consumerConfig, Collection<Integer> shards) {
@@ -134,7 +141,7 @@ public class Consumer {
 
             consumerConfig.shardThreads.put(shard, thread);
             thread.start();
-            // add thread shutdown hook to remove it 
+            // add thread shutdown hook to remove it
         }
     }
 
@@ -155,19 +162,16 @@ public class Consumer {
             // TODO: configurable # of executors
             ImmutableMap<Integer, ExecutorService> executors = getExecutors(ConsumerConfig.DEFAULT_NUM_EXECUTORS);
 
-            return new ConsumerConfig(topicConfig, consumerName, consumer, executors);
+            return new ConsumerConfig(topicConfig,
+                    consumerName,
+                    consumer,
+                    new ThreadPoolExecutor(ConsumerConfig.DEFAULT_NUM_EXECUTORS, ConsumerConfig.DEFAULT_NUM_EXECUTORS,
+                            0L, TimeUnit.MILLISECONDS,
+                            new LinkedBlockingQueue<>(EXECUTOR_QUEUE_SIZE)),
+                    new ThreadPoolExecutor(ConsumerConfig.DEFAULT_NUM_EXECUTORS, ConsumerConfig.DEFAULT_NUM_EXECUTORS,
+                            0L, TimeUnit.MILLISECONDS,
+                            new LinkedBlockingQueue<>(EXECUTOR_QUEUE_SIZE)));
         });
-    }
-
-    private ImmutableMap<Integer, ExecutorService> getExecutors(int numExecutors) {
-        // because we want to ensure we dont execute 2 tuples with same shard key at same time we want N different single-worker executors
-        ImmutableMap.Builder<Integer, ExecutorService> executorsBuilder = ImmutableMap.builder();
-        for (int i = 0; i < numExecutors; i++) {
-            executorsBuilder.put(i, new ThreadPoolExecutor(1, 1,
-                    0L, TimeUnit.MILLISECONDS,
-                    new LinkedBlockingQueue<>(EXECUTOR_QUEUE_SIZE)));
-        }
-        return executorsBuilder.build();
     }
 
     private void heartbeat(ConsumerConfig consumerConfig) {
@@ -184,10 +188,10 @@ public class Consumer {
 
     /**
      * This method is responsible for maintaing proper state
-     *
+     * <p>
      * This will:
-     *  1. clean out dead consumers
-     *  2. ensure this consumer is registered
+     * 1. clean out dead consumers
+     * 2. ensure this consumer is registered
      *
      * @param tr
      * @param consumerConfig
@@ -196,13 +200,22 @@ public class Consumer {
     private HeartbeatResult heartbeat(Transaction tr, ConsumerConfig consumerConfig) {
         ImmutableList.Builder<String> removedConsumersB = ImmutableList.builder();
 
+        // look for timed-out running shards
+        for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(consumerConfig.topicConfig.runningShardKeys.pack()))) {
+            long popTime = Tuple.fromBytes(keyValue.getValue()).getLong(0);
+            if (System.currentTimeMillis() - popTime > 5000) {
+                // time it out
+                tr.clear(keyValue.getKey());
+            }
+        }
+
         // look for dead consumers
         long now = System.currentTimeMillis();
 
         ImmutableSet.Builder<String> liveConsumersB = ImmutableSet.builder();
         for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(consumerConfig.topicConfig.heartbeats.pack()))) {
             String consumerName = consumerConfig.topicConfig.heartbeats.unpack(keyValue.getKey()).getString(0);
-            if (consumerName.equals(consumerConfig.name)){
+            if (consumerName.equals(consumerConfig.name)) {
                 liveConsumersB.add(consumerConfig.name);
                 continue;
             }
@@ -216,10 +229,10 @@ public class Consumer {
         }
 
         ImmutableSet<String> liveConsumers = liveConsumersB.build();
-        Multimap<String, Integer> originalAssignments = fetchAssignments(tr, consumerConfig.topicConfig.assignments);
+        Multimap<String, Integer> originalAssignments = Helpers.fetchAssignments(tr, consumerConfig.topicConfig.assignments);
 
         originalAssignments.keySet().forEach(consumerName -> {
-            if (!liveConsumers.contains(consumerName)){
+            if (!liveConsumers.contains(consumerName)) {
                 removedConsumersB.add(consumerName);
             }
         });
@@ -243,20 +256,6 @@ public class Consumer {
 
         return new HeartbeatResult(removedConsumers, newAssignments, isAssignmentsUpdated);
     }
-
-//    public void clearAssignments(String topic) {
-//        db.run((Function<Transaction, Void>) tr -> {
-//            rmdir(tr, getTopicAssignmentPath(topic));
-//            return null;
-//        });
-//    }
-
-
-//    private Collection<Integer> removeConsumer(String topic, String name, TopicDirectories directories) {
-//
-//        return db.run((Function<Transaction, Collection<Integer>>) tr -> removeConsumer(tr, name, directories));
-//
-//    }
 
     private Multimap<String, Integer> removeConsumers(Transaction tr, Collection<String> names, ConsumerConfig consumerConfig, Multimap<String, Integer> assignments) {
         // fetch currentAssignments from fdb
@@ -333,21 +332,26 @@ public class Consumer {
                 }
             }
 
-            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricPopped(shardIndex), intToByteArray(numPopped));
-            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricSkipped(shardIndex), intToByteArray(numSkipped));
-            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricPopped(), intToByteArray(numPopped));
-            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricSkipped(), intToByteArray(numSkipped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetric(shardIndex, TopicConfig.METRIC_POPPED), intToByteArray(numPopped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetric(shardIndex, TopicConfig.METRIC_SKIPPED), intToByteArray(numSkipped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.metricPopped(), intToByteArray(numPopped));
+            tr.mutate(MutationType.ADD, consumerConfig.topicConfig.metricSkipped(), intToByteArray(numSkipped));
             // this type of deser error is an internal error and very unexpected, not incrementing error metric, thats for consumer function errors
 
-            if (numPopped < BATCH_SIZE && numSkipped == 0 && numErrored == 0) {
+            if (numPopped < consumerConfig.batchSize && numSkipped == 0 && numErrored == 0) {
                 // exhausted
-                byte[] topicWatchKey = consumerConfig.topicConfig.shardMetricInserted(shardIndex);
+                byte[] topicWatchKey = consumerConfig.topicConfig.shardMetric(shardIndex, TopicConfig.METRIC_INSERTED);
                 return new ConsumeWorkResult(tr.watch(topicWatchKey), result, true);
             }
 
-            if (numPopped + numErrored == 0 && numSkipped == BATCH_SIZE){
+            if (numPopped + numErrored == 0 && numSkipped == consumerConfig.batchSize) {
                 // TODO: pop some more next time so we don't keep spinning on these
                 log.warn("Whole batch was skipped for " + consumerConfig.toString());
+                try {
+                    Thread.sleep(consumerConfig.sleepMillisOnAllSkipped);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
 
 
@@ -361,13 +365,14 @@ public class Consumer {
 
         for (Envelope envelope : workResult.fetched) {
             if (log.isTraceEnabled()) {
-                log.trace("Submitting to executor " + consumerConfig.toString() + " " + envelope.toString());
+                log.trace("Submitting to executorOuter " + consumerConfig.toString() + " " + envelope.toString());
             }
-            consumerConfig.executors.get(envelope.executorIndex).submit(() -> consumerWrapper(consumerConfig, envelope));
+
+            consumerConfig.executorOuter.submit(() -> consumerWrapper(consumerConfig, envelope));
         }
 
         if (workResult.watch != null) {
-            log.debug("Exhausted queue, watching, executor topic=" + consumerConfig.toString() + " shardIndex=" + shardIndex);
+            log.debug("Exhausted queue, watching, executorOuter topic=" + consumerConfig.toString() + " shardIndex=" + shardIndex);
             workResult.watch.get();
         } else {
             //optionally sleep
@@ -384,50 +389,53 @@ public class Consumer {
     }
 
     private void consumerWrapper(ConsumerConfig consumerConfig, Envelope envelope) {
-        boolean isErrored = false;
         Exception exception = null;
+        long duration = 0;
+        boolean isTimedOut = false;
         try {
             long start = System.currentTimeMillis();
-            consumerConfig.consumer.accept(envelope);
-            long duration = System.currentTimeMillis() - start;
-            // log duration
 
+            java.util.concurrent.Future<?> task = consumerConfig.executorInner.submit(() -> consumerConfig.consumer.accept(envelope));
+            task.get(5, TimeUnit.SECONDS);
 
+            duration = System.currentTimeMillis() - start;
+        } catch (TimeoutException e) {
+            isTimedOut = true;
+            log.warn("timed out " + consumerConfig.toString() + " " + envelope.toString());
         } catch (Exception e) {
             log.error("error during consume, put in errored data folder", e);
             exception = e;
         } finally {
+            // TODO: stats/logging hook
+
             // even if it errors we want to mark it not as running
             final Exception finalException = exception;
+            final long finalDuration = duration;
+            final boolean finalIsTimedOut = isTimedOut;
             db.run((Function<Transaction, Void>) tr -> {
-                tr.clear(consumerConfig.topicConfig.runningData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)));
-                tr.clear(consumerConfig.topicConfig.runningShardKeys.pack(envelope.shardKey));
+                final TopicConfig tc = consumerConfig.topicConfig;
+                final int si = envelope.shardIndex;
 
-                if (finalException != null){
-                    // TODO: full exception stack trace?
-                    tr.set(consumerConfig.topicConfig.erroredData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)), Tuple.from(envelope.shardKey, envelope.message, System.currentTimeMillis(), prettyStackTrace(finalException)).pack());
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricErrored(envelope.shardIndex), ONE);
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricErrored(), ONE);
+                tr.clear(tc.runningData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)));
+                tr.clear(tc.runningShardKeys.pack(envelope.shardKey));
+
+                if (finalException != null) {
+                    tr.set(tc.erroredData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)), Tuple.from(envelope.shardKey, envelope.message, System.currentTimeMillis(), prettyStackTrace(finalException)).pack());
+                    tc.incShardMetric(tr, si, METRIC_ERRORED);
+                    tc.incMetric(tr, METRIC_ERRORED);
+                    tc.incMetric(tr, METRIC_ERRORED_DURATION, (int) finalDuration);
+                } else if (finalIsTimedOut) {
+                    tc.incShardMetric(tr, si, METRIC_TIMED_OUT);
+                    tc.incMetric(tr, METRIC_TIMED_OUT);
                 }else {
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.shardMetricAcked(envelope.shardIndex), ONE);
-                    tr.mutate(MutationType.ADD, consumerConfig.topicConfig.topicMetricAcked(), ONE);
+                    tc.incShardMetric(tr, si, METRIC_ACKED);
+                    tc.incMetric(tr, METRIC_ACKED);
+                    tc.incMetric(tr, METRIC_ACKED_DURATION, (int) finalDuration);
                 }
 
                 return null;
             });
         }
-    }
-
-    private static String prettyStackTrace(Exception e) {
-        StringBuilder sb = new StringBuilder();
-        for (StackTraceElement element : e.getStackTrace()) {
-            sb.append(element.toString()).append("\n");
-            if (element.getMethodName().equals("consumerWrapper")){
-                break;
-            }
-        }
-
-        return sb.toString();
     }
 
     private boolean isMine(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
