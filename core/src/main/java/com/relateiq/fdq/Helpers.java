@@ -17,6 +17,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.util.Arrays;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 
 /**
@@ -29,6 +32,7 @@ public class Helpers {
     public static final int MOD_HASH_ITERATIONS_QUEUE_SHARDING = 1;
     public static final int MOD_HASH_ITERATIONS_EXECUTOR_SHARDING = 2;
     public static final DirectoryLayer DIRECTORY_LAYER = DirectoryLayer.getDefault();
+    public static final String DEACTIVATED = "deactivated";
 
     private static final HashFunction hashFunction = Hashing.goodFastHash(32);
     public static final byte[] NULL = {0};
@@ -117,5 +121,28 @@ public class Helpers {
 
     public static void rmdir(TransactionContext tr, String... strings) {
         DIRECTORY_LAYER.removeIfExists(tr, Arrays.asList(strings)).get();
+    }
+
+    public static boolean isActivated(Transaction tr, TopicConfig topicConfig) {
+        return tr.get(topicConfig.config.pack(DEACTIVATED)).get() == null;
+    }
+
+    static String prettyStackTrace(Exception e, String stopAtMethodName) {
+        StringBuilder sb = new StringBuilder();
+        for (StackTraceElement element : e.getStackTrace()) {
+            sb.append(element.toString()).append("\n");
+            if (element.getMethodName().equals(stopAtMethodName)) {
+                break;
+            }
+        }
+
+        return sb.toString();
+    }
+
+    static ThreadPoolExecutor createExecutor() {
+        // TODO: configurable # of executors
+        return new ThreadPoolExecutor(ConsumerConfig.DEFAULT_NUM_EXECUTORS, ConsumerConfig.DEFAULT_NUM_EXECUTORS,
+                0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(Consumer.EXECUTOR_QUEUE_SIZE));
     }
 }

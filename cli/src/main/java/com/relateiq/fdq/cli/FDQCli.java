@@ -149,12 +149,13 @@ public class FDQCli {
 
         Consumer c = new Consumer(db);
 
-        c.consume(topic, "" + (new Random()).nextLong(), e -> {
+        c.createConsumer(topic, "" + (new Random()).nextLong(), e -> {
             try {
                 Thread.sleep(new Random().nextInt(6000));
             } catch (InterruptedException e1) {
             }
-            System.out.println(e.toString() + " " + new String(e.message));});
+            System.out.println(e.toString() + " " + new String(e.message));
+        });
 
     }
 

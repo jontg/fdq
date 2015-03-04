@@ -106,4 +106,5 @@ public class TopicConfig {
     public void incMetric(Transaction tr, String metricName, int amount) {
         tr.mutate(MutationType.ADD, metric(metricName), intToByteArray(amount));
     }
+
 }

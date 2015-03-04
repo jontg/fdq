@@ -35,7 +35,7 @@ public class Divvy {
         currentAssignments = ImmutableMultimap.copyOf(currentAssignments);
 
         // dont do anything if no changes
-        int currentTokenCount = currentAssignments.asMap().values().stream().mapToInt(x -> x.size()).sum();
+        int currentTokenCount = tokenCount(currentAssignments);
         if (currentAssignments.containsKey(newConsumerId) && currentTokenCount == desiredTokenCount) {
             return currentAssignments;
         }
@@ -87,12 +87,11 @@ public class Divvy {
 
         builder.putAll(newConsumerId, newConsumerTokens);
 
-        ImmutableMultimap<String, Integer> result = builder.build();
-        int newTokenCount = result.asMap().values().stream().mapToInt(x -> x.size()).sum();
+        return builder.build();
+    }
 
-        assert newTokenCount == desiredTokenCount;
-
-        return result;
+    private static int tokenCount(Multimap<String, Integer> currentAssignments) {
+        return currentAssignments.asMap().values().stream().mapToInt(x -> x.size()).sum();
     }
 
 
@@ -106,7 +105,7 @@ public class Divvy {
         currentAssignments = ImmutableMultimap.copyOf(currentAssignments);
 
         // dont do anything if no changes
-        int currentTokenCount = currentAssignments.asMap().values().stream().mapToInt(x -> x.size()).sum();
+        int currentTokenCount = tokenCount(currentAssignments);
         if (!currentAssignments.containsKey(removedConsumerId)) {
             return currentAssignments;
         }
@@ -146,11 +145,6 @@ public class Divvy {
             i++;
         }
 
-        ImmutableMultimap<String, Integer> result = builder.build();
-        int newTokenCount = result.asMap().values().stream().mapToInt(x -> x.size()).sum();
-
-        assert newTokenCount == desiredTokenCount;
-
-        return result;
+        return builder.build();
     }
 }

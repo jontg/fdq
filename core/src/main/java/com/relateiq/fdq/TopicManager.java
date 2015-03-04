@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 
+import static com.relateiq.fdq.Helpers.DEACTIVATED;
 import static com.relateiq.fdq.Helpers.rmdir;
 import static com.relateiq.fdq.Helpers.toInt;
 import static com.relateiq.fdq.TopicConfig.*;
@@ -36,34 +37,38 @@ public class TopicManager {
         return db.run((Function<Transaction, TopicStats>) tr ->
                         new TopicStats(topicConfig.topic
                                 , Helpers.fetchAssignments(tr, topicConfig.assignments)
-                                , toInt(tr.get(topicConfig.metric(METRIC_INSERTED)).get())
-                                , toInt(tr.get(topicConfig.metric(METRIC_ACKED)).get())
-                                , toInt(tr.get(topicConfig.metric(METRIC_ACKED_DURATION)).get())
-                                , toInt(tr.get(topicConfig.metric(METRIC_ERRORED)).get())
-                                , toInt(tr.get(topicConfig.metric(METRIC_ERRORED_DURATION)).get())
-                                , toInt(tr.get(topicConfig.metric(METRIC_TIMED_OUT)).get())
-                                , toInt(tr.get(topicConfig.metric(METRIC_POPPED)).get())
+                                , metric(tr, METRIC_INSERTED)
+                                , metric(tr, METRIC_ACKED)
+                                , metric(tr, METRIC_ACKED_DURATION)
+                                , metric(tr, METRIC_ERRORED)
+                                , metric(tr, METRIC_ERRORED_DURATION)
+                                , metric(tr, METRIC_TIMED_OUT)
+                                , metric(tr, METRIC_POPPED)
                         )
         );
+    }
+
+    private int metric(Transaction tr, String metricName) {
+        return toInt(tr.get(topicConfig.metric(metricName)).get());
     }
 
     /**
      * This will prevent the consumers from pulling any more message off the topic they are watching. The opposite of activate.
      */
     public void deactivate() {
-        db.run((Function<Transaction, Void>) tr -> {tr.set(topicConfig.config.pack("deactivated"), Helpers.NULL); return null;});
+        db.run((Function<Transaction, Void>) tr -> {tr.set(topicConfig.config.pack(DEACTIVATED), Helpers.NULL); return null;});
     }
 
     /**
      * This will enable the consumers to pull messages off the topic they are watching. The opposite of deactivate.
      */
     public void activate() {
-        db.run((Function<Transaction, Void>) tr -> {tr.clear(topicConfig.config.pack("deactivated")); return null;});
+        db.run((Function<Transaction, Void>) tr -> {tr.clear(topicConfig.config.pack(DEACTIVATED)); return null;});
     }
 
     public boolean isActivated() {
         return db.run((Function<Transaction, Boolean>) tr ->
-                tr.get(topicConfig.config.pack("deactivated")).get() == null);
+                Helpers.isActivated(tr, topicConfig));
     }
 
 

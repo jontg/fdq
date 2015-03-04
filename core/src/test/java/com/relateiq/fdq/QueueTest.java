@@ -2,7 +2,6 @@ package com.relateiq.fdq;
 
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
-import com.foundationdb.Transaction;
 import com.google.common.collect.ConcurrentHashMultiset;
 import com.google.common.collect.Multiset;
 import org.junit.Test;
@@ -11,12 +10,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.stream.IntStream;
 
 import static java.util.stream.Collectors.toList;
@@ -41,9 +34,9 @@ public class QueueTest {
         Multiset<String> rcvd = ConcurrentHashMultiset.create();
 
         log.debug("creating consumers");
-        new Thread(() -> c.consume(TOPIC, "a", e -> rcvd.add(new String(e.message)))).start();
-        new Thread(() -> c.consume(TOPIC, "b", e -> rcvd.add(new String(e.message)))).start();
-        new Thread(() -> c.consume(TOPIC, "c", e -> rcvd.add(new String(e.message)))).start();
+        new Thread(() -> c.createConsumer(TOPIC, "a", e -> rcvd.add(new String(e.message)))).start();
+        new Thread(() -> c.createConsumer(TOPIC, "b", e -> rcvd.add(new String(e.message)))).start();
+        new Thread(() -> c.createConsumer(TOPIC, "c", e -> rcvd.add(new String(e.message)))).start();
 
         log.debug("adding serially");
         long start = System.currentTimeMillis();
@@ -92,9 +85,9 @@ public class QueueTest {
         TopicManager m = new TopicManager(db, p.topicConfig);
 
         log.debug("creating consumers");
-        new Thread(() -> c.consume(TOPIC, "a", e -> e.toString())).start();
-        new Thread(() -> c.consume(TOPIC, "b", e -> e.toString())).start();
-        new Thread(() -> c.consume(TOPIC, "c", e -> e.toString())).start();
+        new Thread(() -> c.createConsumer(TOPIC, "a", e -> e.toString())).start();
+        new Thread(() -> c.createConsumer(TOPIC, "b", e -> e.toString())).start();
+        new Thread(() -> c.createConsumer(TOPIC, "c", e -> e.toString())).start();
 
         log.debug("deactivating");
         m.deactivate();
@@ -144,7 +137,9 @@ public class QueueTest {
         TopicManager m = new TopicManager(db, p.topicConfig);
 
         log.debug("creating consumers");
-        new Thread(() -> c.consume(TOPIC, "a", e -> {throw new RuntimeException("asdf");})).start();
+        new Thread(() -> c.createConsumer(TOPIC, "a", e -> {
+            throw new RuntimeException("asdf");
+        })).start();
 
         int COUNT = 5;
         List<MessageRequest> reqs = IntStream.range(0, COUNT).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());

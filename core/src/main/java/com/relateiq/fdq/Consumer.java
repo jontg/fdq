@@ -19,12 +19,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.FutureTask;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -51,19 +45,8 @@ public class Consumer {
         this.db = db;
     }
 
-    private static String prettyStackTrace(Exception e) {
-        StringBuilder sb = new StringBuilder();
-        for (StackTraceElement element : e.getStackTrace()) {
-            sb.append(element.toString()).append("\n");
-            if (element.getMethodName().equals("consumerWrapper")) {
-                break;
-            }
-        }
-
-        return sb.toString();
-    }
-
     /**
+     * Fetches the consumer name for a given shardIndex
      *
      * @param tr the transaction
      * @param consumerConfig
@@ -86,8 +69,14 @@ public class Consumer {
         }
     }
 
-    public ConsumerConfig consume(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
-        ConsumerConfig consumerConfig = initConsumer(topic, consumerName, consumer);
+    public ConsumerConfig createConsumer(final String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
+        TopicConfig topicConfig = Helpers.createTopicConfig(db, topic);
+
+        ConsumerConfig consumerConfig = new ConsumerConfig(topicConfig,
+                consumerName,
+                consumer,
+                Helpers.createExecutor(),
+                Helpers.createExecutor());
 
         // start heartbeat thread
         new Thread(() -> {
@@ -108,6 +97,12 @@ public class Consumer {
         return consumerConfig;
     }
 
+    /**
+     * Ensure we have a consumer thread for each of our shards
+     *
+     * @param consumerConfig
+     * @param shards
+     */
     private void ensureShardThreads(ConsumerConfig consumerConfig, Collection<Integer> shards) {
         // ensure consumers for each of our shards
         for (Integer shard : shards) {
@@ -122,7 +117,8 @@ public class Consumer {
             thread = new Thread(() -> {
                 try {
                     //noinspection StatementWithEmptyBody
-                    while (consumeWork(consumerConfig, finalI)) {}
+                    while (consumerBlockingPop(consumerConfig, finalI)) {
+                    }
                 } catch (Exception e) {
                     log.error("error consuming", e);
                 }
@@ -137,37 +133,69 @@ public class Consumer {
         }
     }
 
-    /**
-     *
-     * @param topic
-     * @param consumerName
-     * @param consumer
-     * @return ConsumerConfig
-     */
-    private ConsumerConfig initConsumer(String topic, String consumerName, java.util.function.Consumer<Envelope> consumer) {
-        return db.run((Function<Transaction, ConsumerConfig>) tr -> {
-            TopicConfig topicConfig = Helpers.createTopicConfig(tr, topic);
-
-            // register consumer
-            tr.set(topicConfig.heartbeats.pack(consumerName), currentTimeMillisAsBytes());
-
-            // TODO: configurable # of executors
-
-            return new ConsumerConfig(topicConfig,
-                    consumerName,
-                    consumer,
-                    new ThreadPoolExecutor(ConsumerConfig.DEFAULT_NUM_EXECUTORS, ConsumerConfig.DEFAULT_NUM_EXECUTORS,
-                            0L, TimeUnit.MILLISECONDS,
-                            new LinkedBlockingQueue<>(EXECUTOR_QUEUE_SIZE)),
-                    new ThreadPoolExecutor(ConsumerConfig.DEFAULT_NUM_EXECUTORS, ConsumerConfig.DEFAULT_NUM_EXECUTORS,
-                            0L, TimeUnit.MILLISECONDS,
-                            new LinkedBlockingQueue<>(EXECUTOR_QUEUE_SIZE)));
-        });
-    }
-
     private void heartbeat(ConsumerConfig consumerConfig) {
+        HeartbeatResult result = db.run((Function<Transaction, HeartbeatResult>) tr -> {
+            ImmutableList.Builder<String> removedConsumersB = ImmutableList.builder();
 
-        HeartbeatResult result = db.run((Function<Transaction, HeartbeatResult>) tr -> heartbeat(tr, consumerConfig));
+            // look for timed-out running shards
+            final TopicConfig tc = consumerConfig.topicConfig;
+
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(tc.runningShardKeys.pack()))) {
+                long popTime = Tuple.fromBytes(keyValue.getValue()).getLong(0);
+                if (System.currentTimeMillis() - popTime > 5000) {
+                    // time it out
+                    tr.clear(keyValue.getKey());
+                }
+            }
+
+            // look for dead consumers (those with heartbeats older than consumerHeartbeatTimeoutMillis)
+            long now = System.currentTimeMillis();
+            ImmutableSet.Builder<String> liveConsumersB = ImmutableSet.builder();
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(tc.heartbeats.pack()))) {
+                String consumerName = tc.heartbeats.unpack(keyValue.getKey()).getString(0);
+                if (consumerName.equals(consumerConfig.name)) {
+                    liveConsumersB.add(consumerConfig.name);
+                    continue;
+                }
+                long millis = bytesToMillis(keyValue.getValue());
+
+                if (now - millis > tc.consumerHeartbeatTimeoutMillis) {
+                    removedConsumersB.add(consumerName);
+                } else {
+                    liveConsumersB.add(consumerName);
+                }
+            }
+
+            ImmutableSet<String> liveConsumers = liveConsumersB.build();
+            Multimap<String, Integer> originalAssignments = Helpers.fetchAssignments(tr, tc.assignments);
+
+            originalAssignments.keySet().forEach(consumerName -> {
+                if (!liveConsumers.contains(consumerName)) {
+                    removedConsumersB.add(consumerName);
+                }
+            });
+
+
+            // remove dead consumers
+            ImmutableList<String> removedConsumers = removedConsumersB.build();
+            Multimap<String, Integer> newAssignments = removeConsumers(tr, removedConsumers, consumerConfig, originalAssignments);
+
+            // ensure our consumer is added
+            newAssignments = Divvy.addConsumer(newAssignments, consumerConfig.name, tc.numShards);
+
+            boolean isAssignmentsUpdated = !newAssignments.equals(originalAssignments);
+            if (isAssignmentsUpdated) {
+                saveAssignments(tr, consumerConfig, newAssignments);
+            }
+
+            // update our timestamp
+            tr.set(tc.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
+
+            // check for de/activation
+            boolean isActivated = Helpers.isActivated(tr, tc);
+
+            return new HeartbeatResult(removedConsumers, newAssignments, isAssignmentsUpdated, isActivated);
+        });
 
         if (result.isActivated) {
             ensureShardThreads(consumerConfig, result.assignments.get(consumerConfig.name));
@@ -179,83 +207,7 @@ public class Consumer {
 
     }
 
-    /**
-     * This method is responsible for maintaing proper state
-     * <p>
-     * This will:
-     * 1. clean out dead consumers
-     * 2. ensure this consumer is registered
-     *
-     * @param tr
-     * @param consumerConfig
-     * @return
-     */
-    private HeartbeatResult heartbeat(Transaction tr, ConsumerConfig consumerConfig) {
-        ImmutableList.Builder<String> removedConsumersB = ImmutableList.builder();
-
-        // look for timed-out running shards
-        final TopicConfig tc = consumerConfig.topicConfig;
-
-        for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(tc.runningShardKeys.pack()))) {
-            long popTime = Tuple.fromBytes(keyValue.getValue()).getLong(0);
-            if (System.currentTimeMillis() - popTime > 5000) {
-                // time it out
-                tr.clear(keyValue.getKey());
-            }
-        }
-
-        // look for dead consumers (those with heartbeats older than consumerHeartbeatTimeoutMillis)
-        long now = System.currentTimeMillis();
-        ImmutableSet.Builder<String> liveConsumersB = ImmutableSet.builder();
-        for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(tc.heartbeats.pack()))) {
-            String consumerName = tc.heartbeats.unpack(keyValue.getKey()).getString(0);
-            if (consumerName.equals(consumerConfig.name)) {
-                liveConsumersB.add(consumerConfig.name);
-                continue;
-            }
-            long millis = bytesToMillis(keyValue.getValue());
-
-            if (now - millis > tc.consumerHeartbeatTimeoutMillis) {
-                removedConsumersB.add(consumerName);
-            } else {
-                liveConsumersB.add(consumerName);
-            }
-        }
-
-        ImmutableSet<String> liveConsumers = liveConsumersB.build();
-        Multimap<String, Integer> originalAssignments = Helpers.fetchAssignments(tr, tc.assignments);
-
-        originalAssignments.keySet().forEach(consumerName -> {
-            if (!liveConsumers.contains(consumerName)) {
-                removedConsumersB.add(consumerName);
-            }
-        });
-
-
-        // remove dead consumers
-        ImmutableList<String> removedConsumers = removedConsumersB.build();
-        Multimap<String, Integer> newAssignments = removeConsumers(tr, removedConsumers, consumerConfig, originalAssignments);
-
-        // ensure our consumer is added
-        newAssignments = Divvy.addConsumer(newAssignments, consumerConfig.name, tc.numShards);
-
-        boolean isAssignmentsUpdated = !newAssignments.equals(originalAssignments);
-        if (isAssignmentsUpdated) {
-            saveAssignments(tr, consumerConfig, newAssignments);
-        }
-
-        // update our timestamp
-        tr.set(tc.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
-
-        // check for de/activation
-        boolean isActivated = isActivated(tr, tc);
-
-        return new HeartbeatResult(removedConsumers, newAssignments, isAssignmentsUpdated, isActivated);
-    }
-
     private Multimap<String, Integer> removeConsumers(Transaction tr, Collection<String> names, ConsumerConfig consumerConfig, Multimap<String, Integer> assignments) {
-        // fetch currentAssignments from fdb
-
         // remove these consumers
         for (String name : names) {
             assignments = Divvy.removeConsumer(assignments, name, consumerConfig.topicConfig.numShards);
@@ -267,7 +219,14 @@ public class Consumer {
         return assignments;
     }
 
-    private boolean consumeWork(ConsumerConfig consumerConfig, Integer shardIndex) {
+    /**
+     * Fetches up to batchSize worth of messages or blocks watching for messages if there are currently none
+     *
+     * @param consumerConfig
+     * @param shardIndex
+     * @return true if we should keep tailing
+     */
+    private boolean consumerBlockingPop(ConsumerConfig consumerConfig, Integer shardIndex) {
         final TopicConfig tc = consumerConfig.topicConfig;
 
         // casting is here because of a java 8 compiler bug with ambiguous overloads :(
@@ -276,7 +235,7 @@ public class Consumer {
             if (!isMine(tr, consumerConfig, shardIndex)) {
                 return new ConsumeWorkResult(null, null, false);
             }
-            if (!isActivated(tr, tc)) {
+            if (!Helpers.isActivated(tr, tc)) {
                 return new ConsumeWorkResult(null, null, false);
             }
 
@@ -365,7 +324,7 @@ public class Consumer {
                 log.trace("Submitting to executorOuter " + consumerConfig.toString() + " " + envelope.toString());
             }
 
-            consumerConfig.executorOuter.submit(() -> consumerWrapper(consumerConfig, envelope));
+            consumerConfig.executorOuter.submit(() -> consumeEnvelope(consumerConfig, envelope));
         }
 
         if (workResult.watch != null) {
@@ -385,7 +344,7 @@ public class Consumer {
         return true;
     }
 
-    private void consumerWrapper(ConsumerConfig consumerConfig, Envelope envelope) {
+    private void consumeEnvelope(ConsumerConfig consumerConfig, Envelope envelope) {
         Exception exception = null;
         long duration = 0;
         boolean isTimedOut = false;
@@ -417,7 +376,7 @@ public class Consumer {
                 tr.clear(tc.runningShardKeys.pack(envelope.shardKey));
 
                 if (finalException != null) {
-                    tr.set(tc.erroredData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)), Tuple.from(envelope.shardKey, envelope.message, System.currentTimeMillis(), prettyStackTrace(finalException)).pack());
+                    tr.set(tc.erroredData.pack(Tuple.from(envelope.insertionTime, envelope.randomInt)), Tuple.from(envelope.shardKey, envelope.message, System.currentTimeMillis(), Helpers.prettyStackTrace(finalException, "consumeEnvelope")).pack());
                     tc.incShardMetric(tr, si, METRIC_ERRORED);
                     tc.incMetric(tr, METRIC_ERRORED);
                     tc.incMetric(tr, METRIC_ERRORED_DURATION, (int) finalDuration);
@@ -438,10 +397,6 @@ public class Consumer {
     private boolean isMine(Transaction tr, ConsumerConfig consumerConfig, Integer shardIndex) {
         return fetchAssignment(tr, consumerConfig, shardIndex)
                 .filter(consumerConfig.name::equals).isPresent();
-    }
-
-    private boolean isActivated(Transaction tr, TopicConfig topicConfig) {
-        return tr.get(topicConfig.config.pack("deactivated")).get() == null;
     }
 
     private static class ConsumeWorkResult {
