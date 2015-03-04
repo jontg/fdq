@@ -63,7 +63,7 @@ public class TopicProducer {
                 insertedPerShardIndex.add(shardIndex);
             }
 
-            tr.mutate(MutationType.ADD, topicConfig.metricInserted(), intToByteArray(messageRequests.size()));
+            tr.mutate(MutationType.ADD, topicConfig.metric(TopicConfig.METRIC_INSERTED), intToByteArray(messageRequests.size()));
 
             for (Multiset.Entry<Integer> entry : insertedPerShardIndex.entrySet()) {
                 tr.mutate(MutationType.ADD, topicConfig.shardMetric(entry.getElement(), TopicConfig.METRIC_INSERTED), intToByteArray(entry.getCount()));

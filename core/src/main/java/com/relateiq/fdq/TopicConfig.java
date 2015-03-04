@@ -16,6 +16,7 @@ import static com.relateiq.fdq.Helpers.intToByteArray;
 public class TopicConfig {
 
     public static final int DEFAULT_NUM_SHARDS = 24;  // todo: make this configurable
+    public static final int DEFAULT_CONSUMER_TIMEOUT_MILLIS = 5000;
 
     public static final String METRIC_INSERTED = "inserted";
     public static final String METRIC_POPPED = "popped";
@@ -30,8 +31,10 @@ public class TopicConfig {
 
     public final DirectorySubspace assignments;
     public final DirectorySubspace heartbeats;
-    public final DirectorySubspace topicMetrics;
+    public final DirectorySubspace config;
 
+
+    public final DirectorySubspace topicMetrics;
 
     public final DirectorySubspace erroredData;
 
@@ -46,13 +49,13 @@ public class TopicConfig {
      * we keep track of which shard keys are currently running.
      */
     public final DirectorySubspace runningShardKeys;
-
     public final Map<Integer, DirectorySubspace> shardMetrics;
     public final Map<Integer, DirectorySubspace> shardData;
     public final int numShards = DEFAULT_NUM_SHARDS;
+    public long consumerHeartbeatTimeoutMillis = DEFAULT_CONSUMER_TIMEOUT_MILLIS;
 
 
-    public TopicConfig(String topic, DirectorySubspace assignments, DirectorySubspace heartbeats, DirectorySubspace topicMetrics, DirectorySubspace erroredData, DirectorySubspace runningData, DirectorySubspace runningShardKeys, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData) {
+    public TopicConfig(String topic, DirectorySubspace config, DirectorySubspace assignments, DirectorySubspace heartbeats, DirectorySubspace topicMetrics, DirectorySubspace erroredData, DirectorySubspace runningData, DirectorySubspace runningShardKeys, Map<Integer, DirectorySubspace> shardMetrics, Map<Integer, DirectorySubspace> shardData) {
         this.topic = topic;
         this.assignments = assignments;
         this.heartbeats = heartbeats;
@@ -62,42 +65,15 @@ public class TopicConfig {
         this.shardMetrics = shardMetrics;
         this.shardData = shardData;
         this.runningData = runningData;
+        this.config = config;
     }
 
     public byte[] shardMetric(Integer shardIndex, String metricName) {
         return shardMetrics.get(shardIndex).pack(Tuple.from(metricName));
     }
 
-    public byte[] metricInserted() {
-        return topicMetrics.pack(Tuple.from(METRIC_INSERTED));
-    }
-
-    public byte[] metricAcked() {
-        return metric(METRIC_ACKED);
-    }
-
     public byte[] metric(String metricName) {
         return topicMetrics.pack(Tuple.from(metricName));
-    }
-
-    public byte[] metricAckedDuration() {
-        return topicMetrics.pack(Tuple.from(METRIC_ACKED_DURATION));
-    }
-
-    public byte[] metricErrored() {
-        return topicMetrics.pack(Tuple.from(METRIC_ERRORED));
-    }
-
-    public byte[] metricErroredDuration() {
-        return topicMetrics.pack(Tuple.from(METRIC_ERRORED_DURATION));
-    }
-
-    public byte[] metricSkipped() {
-        return topicMetrics.pack(Tuple.from(METRIC_SKIPPED));
-    }
-
-    public byte[] metricPopped() {
-        return topicMetrics.pack(Tuple.from(METRIC_POPPED));
     }
 
     public byte[] shardAssignmentKey(Integer shardIndex) {

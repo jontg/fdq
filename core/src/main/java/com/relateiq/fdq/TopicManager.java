@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 
-import static com.relateiq.fdq.DirectoryCache.rmdir;
+import static com.relateiq.fdq.Helpers.rmdir;
 import static com.relateiq.fdq.Helpers.toInt;
 import static com.relateiq.fdq.TopicConfig.*;
 

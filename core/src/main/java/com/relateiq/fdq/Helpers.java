@@ -4,6 +4,7 @@ import com.foundationdb.KeyValue;
 import com.foundationdb.Range;
 import com.foundationdb.Transaction;
 import com.foundationdb.TransactionContext;
+import com.foundationdb.directory.DirectoryLayer;
 import com.foundationdb.directory.DirectorySubspace;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
@@ -15,8 +16,7 @@ import com.google.common.hash.Hashing;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
-
-import static com.relateiq.fdq.DirectoryCache.mkdirp;
+import java.util.Arrays;
 
 
 /**
@@ -28,6 +28,7 @@ public class Helpers {
     public static final byte[] ONE = intToByteArray(1);
     public static final int MOD_HASH_ITERATIONS_QUEUE_SHARDING = 1;
     public static final int MOD_HASH_ITERATIONS_EXECUTOR_SHARDING = 2;
+    public static final DirectoryLayer DIRECTORY_LAYER = DirectoryLayer.getDefault();
 
     private static final HashFunction hashFunction = Hashing.goodFastHash(32);
 
@@ -72,20 +73,23 @@ public class Helpers {
 
     public static TopicConfig createTopicConfig(TransactionContext tr, String topic) {
         // init directories
+        DirectorySubspace config = mkdirp(tr, topic, "config");
         DirectorySubspace assignments = mkdirp(tr, topic, "config", "assignments");
         DirectorySubspace heartbeats = mkdirp(tr, topic, "config", "heartbeats");
-        DirectorySubspace runningData = mkdirp(tr, topic, "config", "runningData");
-        DirectorySubspace runningShardKeys = mkdirp(tr, topic, "config", "runningShardKeys");
-        DirectorySubspace topicMetrics = mkdirp(tr, topic, "config", "topicMetrics");
-        DirectorySubspace erroredData = mkdirp(tr, topic, "config", "erroredData");
+
+        DirectorySubspace topicMetrics = mkdirp(tr, topic, "metrics", "topic");
+
+        DirectorySubspace erroredData = mkdirp(tr, topic, "data", "errored");
+        DirectorySubspace runningData = mkdirp(tr, topic, "data", "running");
+        DirectorySubspace runningShardKeys = mkdirp(tr, topic, "data", "runningShardKeys");
 
         ImmutableMap.Builder<Integer, DirectorySubspace> shardMetrics = ImmutableMap.builder();
         ImmutableMap.Builder<Integer, DirectorySubspace> shardData = ImmutableMap.builder();
         for (int i = 0; i < TopicConfig.DEFAULT_NUM_SHARDS; i++) {
-            shardMetrics.put(i, mkdirp(tr, topic, "metrics", "" + (Integer) i));
-            shardData.put(i, mkdirp(tr, topic, "data", "" + (Integer) i));
+            shardMetrics.put(i, mkdirp(tr, topic, "metrics", "shards", "" + (Integer) i));
+            shardData.put(i, mkdirp(tr, topic, "data", "shards", "" + (Integer) i));
         }
-        return new TopicConfig(topic, assignments, heartbeats, topicMetrics, erroredData, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
+        return new TopicConfig(topic, config, assignments, heartbeats, topicMetrics, erroredData, runningData, runningShardKeys, shardMetrics.build(), shardData.build());
     }
 
     /**
@@ -104,5 +108,13 @@ public class Helpers {
         }
 
         return builder.build();
+    }
+
+    public static DirectorySubspace mkdirp(TransactionContext tr, String... strings) {
+        return DIRECTORY_LAYER.createOrOpen(tr, Arrays.asList(strings)).get();
+    }
+
+    public static void rmdir(TransactionContext tr, String... strings) {
+        DIRECTORY_LAYER.removeIfExists(tr, Arrays.asList(strings)).get();
     }
 }
