@@ -31,6 +31,7 @@ public class Helpers {
     public static final DirectoryLayer DIRECTORY_LAYER = DirectoryLayer.getDefault();
 
     private static final HashFunction hashFunction = Hashing.goodFastHash(32);
+    public static final byte[] NULL = {0};
 
     public static int toInt(byte[] in){
         if (in == null){ return 0;}

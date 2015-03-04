@@ -52,7 +52,12 @@ public class TopicProducer {
         db.run((Function<Transaction, Void>) tr -> {
             Multiset<Integer> insertedPerShardIndex = HashMultiset.create();
             for (MessageRequest messageRequest : messageRequests) {
-                Integer shardIndex = modHash(messageRequest.shardKey, topicConfig.numShards, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
+                Integer shardIndex;
+                if (messageRequest.shardKey!= null) {
+                    shardIndex = modHash(messageRequest.shardKey, topicConfig.numShards, MOD_HASH_ITERATIONS_QUEUE_SHARDING);
+                }else {
+                    shardIndex = random.nextInt(topicConfig.numShards);
+                }
 
                 if (log.isTraceEnabled()) {
                     log.trace("producing topic=" + topicConfig.topic + " shardKey=" + messageRequest.shardKey + " shardIndex=" + shardIndex);

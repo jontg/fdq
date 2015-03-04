@@ -51,15 +51,21 @@ public class TopicManager {
      * This will prevent the consumers from pulling any more message off the topic they are watching. The opposite of activate.
      */
     public void deactivate() {
-
+        db.run((Function<Transaction, Void>) tr -> {tr.set(topicConfig.config.pack("deactivated"), Helpers.NULL); return null;});
     }
 
     /**
      * This will enable the consumers to pull messages off the topic they are watching. The opposite of deactivate.
      */
     public void activate() {
-
+        db.run((Function<Transaction, Void>) tr -> {tr.clear(topicConfig.config.pack("deactivated")); return null;});
     }
+
+    public boolean isActivated() {
+        return db.run((Function<Transaction, Boolean>) tr ->
+                tr.get(topicConfig.config.pack("deactivated")).get() == null);
+    }
+
 
     /**
      * Replay messages for a given period of time. If both minMillis and maxMillis are present, minMillis must be less or equal maxMillis
@@ -79,10 +85,7 @@ public class TopicManager {
      * BE CAREFUL
      */
     public void nuke() {
-        db.run((Function<Transaction, Void>) tr -> {
-            rmdir(tr, topicConfig.topic);
-            return null;
-        });
+        rmdir(db, topicConfig.topic);
     }
 
     public static enum Direction {

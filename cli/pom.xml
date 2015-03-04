@@ -36,6 +36,12 @@
         </dependency>
 
         <dependency>
+            <groupId>net.sourceforge.argparse4j</groupId>
+            <artifactId>argparse4j</artifactId>
+            <version>0.4.4</version>
+        </dependency>
+
+        <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
             <version>2.5.1</version>
@@ -56,7 +62,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.relateiq.fdq.cli.FDQ</mainClass>
+                            <mainClass>com.relateiq.fdq.cli.FDQCli</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

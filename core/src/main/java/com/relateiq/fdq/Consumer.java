@@ -44,7 +44,7 @@ import static com.relateiq.fdq.TopicConfig.METRIC_TIMED_OUT;
 public class Consumer {
     public static final Logger log = LoggerFactory.getLogger(Consumer.class);
     public static final int EXECUTOR_QUEUE_SIZE = 1000;
-    private static final byte[] NULL = {0};
+    public static final int HEARTBEAT_MILLIS = 2000;
     private final Database db;
 
     public Consumer(Database db) {
@@ -104,7 +104,7 @@ public class Consumer {
                 }
                 heartbeat(consumerConfig);
                 try {
-                    Thread.sleep(2000);
+                    Thread.sleep(HEARTBEAT_MILLIS);
                 } catch (InterruptedException e) {
                     log.info("heartbeat interrupted, closing consume topic=" + topic + " consumerName=" + consumerName);
                     break;
@@ -128,7 +128,8 @@ public class Consumer {
             log.info("Starting thread for " + consumerConfig.toString() + " shard="  + shard);
             thread = new Thread(() -> {
                 try {
-                    consumeShard(consumerConfig, finalI);
+                    //noinspection StatementWithEmptyBody
+                    while (consumeWork(consumerConfig, finalI)) {}
                 } catch (Exception e) {
                     log.error("error consuming", e);
                 }
@@ -273,11 +274,6 @@ public class Consumer {
         return assignments;
     }
 
-    private void consumeShard(ConsumerConfig consumerConfig, final Integer shardIndex) {
-        //noinspection StatementWithEmptyBody
-        while (consumeWork(consumerConfig, shardIndex)) {}
-    }
-
     private boolean consumeWork(ConsumerConfig consumerConfig, Integer shardIndex) {
         final TopicConfig tc = consumerConfig.topicConfig;
 
@@ -324,8 +320,7 @@ public class Consumer {
                     tr.addReadConflictKey(keyValue.getKey());
                     numPopped++;
 
-                    int executorIndex = Helpers.modHash(shardKey, consumerConfig.numExecutors, Helpers.MOD_HASH_ITERATIONS_EXECUTOR_SHARDING);
-                    Envelope envelope = new Envelope(insertionTime, randomInt, shardKey, shardIndex, executorIndex, message);
+                    Envelope envelope = new Envelope(insertionTime, randomInt, shardKey, shardIndex, message);
                     result.add(envelope);
 
                     // log that we are running this shardkey and tuple
@@ -453,7 +448,7 @@ public class Consumer {
     }
 
     private boolean isActivated(Transaction tr, TopicConfig topicConfig) {
-        return tr.get(topicConfig.config.pack("deactivated")).get() != null;
+        return tr.get(topicConfig.config.pack("deactivated")).get() == null;
     }
 
     private static class ConsumeWorkResult {

@@ -21,28 +21,12 @@ import java.util.stream.IntStream;
 
 import static java.util.stream.Collectors.toList;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class QueueTest {
     public static final Logger log = LoggerFactory.getLogger(QueueTest.class);
     public static final Random RANDOM = new Random();
-
-//    @Test
-//    public void testAssignments() {
-//        String TOPIC = "" + RANDOM.nextLong();
-//        FDB fdb = FDB.selectAPIVersion(300);
-//        Database db = fdb.open();
-//
-//        Consumer c = new Consumer(db);
-//
-//        c.nukeTopic(TOPIC);
-//        Multimap<String, Integer> assignments = HashMultimap.create();
-//        assignments.putAll("a", IntStream.range(0, 32).mapToObj(x -> x).collect(toSet()));
-//        db.run((Function<Transaction, Void>)tr -> {
-//
-//            c.saveAssignments(tr, directories, assignments);
-//            log.debug(c.fetchAssignments(tr, directory(tr, getTopicAssignmentPath(TOPIC))).toString());
-//            return null;});
-//    }
 
     @Test
     public void tester() throws InterruptedException {
@@ -95,21 +79,58 @@ public class QueueTest {
         log.debug(m.stats().toString());
 
         m.nuke();
+    }
+
+    @Test
+    public void testDeactivate() throws InterruptedException {
+        String TOPIC = "" + RANDOM.nextLong();
+        FDB fdb = FDB.selectAPIVersion(300);
+        Database db = fdb.open();
+
+        Consumer c = new Consumer(db);
+        TopicProducer p = new Producer(db).createProducer(TOPIC);
+        TopicManager m = new TopicManager(db, p.topicConfig);
+
+        log.debug("creating consumers");
+        new Thread(() -> c.consume(TOPIC, "a", e -> e.toString())).start();
+        new Thread(() -> c.consume(TOPIC, "b", e -> e.toString())).start();
+        new Thread(() -> c.consume(TOPIC, "c", e -> e.toString())).start();
+
+        log.debug("deactivating");
+        m.deactivate();
+        assertFalse(m.isActivated());
+
+        log.debug("adding tuples");
+        int COUNT1 = 10;
+        List<MessageRequest> reqs = IntStream.range(0, COUNT1).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());
+        p.produceBatch(reqs);
+
+        assertEquals(0, m.stats().acked);
 
 
+        log.debug("activating");
+        m.activate();
+        assertTrue(m.isActivated());
 
-//        db.run(new Function<Transaction, Void>() {
-//            @Override
-//            public Void apply(Transaction tr) {
-//                for (KeyValue keyValue : tr.getRange(Range.startsWith(Tuple.from("asdf").pack()))) {
-//                        log.debug("hmm: " + new String(keyValue.getKey()) + " : " + new String(keyValue.getValue()));
-//                }
-//                return null;
-//            }
-//        });
+        log.debug("waiting for messages");
+        long start = System.currentTimeMillis();
+        while (true) {
+            if (m.stats().acked == COUNT1) {
+                break;
+            }
+            Thread.sleep(10);
+            if ((System.currentTimeMillis() - start) > Consumer.HEARTBEAT_MILLIS * 2) {
+                log.debug("timed out waiting");
+                break;
+            }
+        }
+        log.debug("waiting for messages took " + (System.currentTimeMillis() - start));
 
-//        Thread.sleep(1000);
+        assertEquals(0, m.runningCount());
+        assertEquals(COUNT1, m.stats().acked);
+        log.debug(m.stats().toString());
 
+        m.nuke();
     }
 
     @Test

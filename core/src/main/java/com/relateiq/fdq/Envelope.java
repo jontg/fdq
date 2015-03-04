@@ -11,15 +11,13 @@ public class Envelope {
     public final String shardKey;
     public final byte[] message;
     public final int shardIndex;
-    public final int executorIndex;
 
-    public Envelope(long insertionTime, int randomInt, String shardKey, int shardIndex, int executorIndex, byte[] message) {
+    public Envelope(long insertionTime, int randomInt, String shardKey, int shardIndex, byte[] message) {
         this.insertionTime = insertionTime;
         this.randomInt = randomInt;
         this.shardKey = shardKey;
         this.message = message;
         this.shardIndex = shardIndex;
-        this.executorIndex = executorIndex;
     }
 
     @Override
@@ -30,7 +28,6 @@ public class Envelope {
                 ", shardKey='" + shardKey + '\'' +
                 ", message=" + Arrays.toString(message) +
                 ", shardIndex=" + shardIndex +
-                ", executorIndex=" + executorIndex +
                 '}';
     }
 }
