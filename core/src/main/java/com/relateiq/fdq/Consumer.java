@@ -63,13 +63,6 @@ public class Consumer {
         return sb.toString();
     }
 
-    private static <T> T timedCall(ExecutorService executor, Callable<T> c, long timeout, TimeUnit timeUnit)
-            throws InterruptedException, ExecutionException, TimeoutException {
-        FutureTask<T> task = new FutureTask<T>(c);
-        executor.execute(task);
-        return task.get(timeout, timeUnit);
-    }
-
     /**
      *
      * @param tr the transaction
