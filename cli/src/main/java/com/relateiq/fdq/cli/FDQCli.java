@@ -151,7 +151,7 @@ public class FDQCli {
 
         c.createConsumer(topic, "" + (new Random()).nextLong(), e -> {
             try {
-                Thread.sleep(new Random().nextInt(6000));
+                Thread.sleep(new Random().nextInt(10));
             } catch (InterruptedException e1) {
             }
             System.out.println(e.toString() + " " + new String(e.message));

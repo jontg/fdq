@@ -8,23 +8,68 @@
     <version>0.0.1-SNAPSHOT</version>
     <name>FDQ Parent</name>
     <url>https://github.com/relateiq/fdq</url>
+
     <properties>
-        <!-- 2 -->
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
         <parent.project.version>${project.version}</parent.project.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
+        <slf4j-api.version>1.7.10</slf4j-api.version>
+        <fdb-java.version>3.0.2</fdb-java.version>
+        <guava.version>18.0</guava.version>
+        <junit.version>4.11</junit.version>
+        <logback.version>1.1.2</logback.version>
     </properties>
+
     <!-- Include subProjects here -->
     <modules>
         <module>core</module>
         <module>cli</module>
     </modules>
+
     <!-- Include common dependencies here -->
+    <dependencies>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j-api.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- Include common dependency versions here -->
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>com.foundationdb</groupId>
+                <artifactId>fdb-java</artifactId>
+                <version>${fdb-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ch.qos.logback</groupId>
+                <artifactId>logback-classic</artifactId>
+                <version>${logback.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
+
     <build>
         <plugins>
             <plugin>

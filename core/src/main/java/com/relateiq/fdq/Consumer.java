@@ -75,7 +75,7 @@ public class Consumer {
         ConsumerConfig consumerConfig = new ConsumerConfig(topicConfig,
                 consumerName,
                 consumer,
-                Helpers.createExecutor(),
+        Helpers.createExecutor(),
                 Helpers.createExecutor());
 
         // start heartbeat thread

@@ -26,7 +26,7 @@ public class Envelope {
                 "insertionTime=" + insertionTime +
                 ", randomInt=" + randomInt +
                 ", shardKey='" + shardKey + '\'' +
-                ", message=" + Arrays.toString(message) +
+                ", messageLength=" + message.length +
                 ", shardIndex=" + shardIndex +
                 '}';
     }
