@@ -2,6 +2,10 @@ package com.relateiq.fdq;
 
 import com.google.common.collect.Multimap;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Created by mbessler on 3/3/15.
  */
@@ -15,12 +19,12 @@ public class TopicStats {
     public final long timed_out;
     public final long popped;
     public final long running;
-    public final Multimap<String, Integer> assignments;
+    public final Map<String, Collection<Integer>> assignments;
     public final long errored_duration_avg;
     public final long acked_duration_avg;
 
 
-    public TopicStats(String name, Multimap<String, Integer> assignments
+    public TopicStats(String name, Map<String, Collection<Integer>> assignments
             , long inserted
             , long acked
             , long acked_duration

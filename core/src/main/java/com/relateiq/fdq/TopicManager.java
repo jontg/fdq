@@ -36,7 +36,7 @@ public class TopicManager {
     public TopicStats stats() {
         return db.run((Function<Transaction, TopicStats>) tr ->
                         new TopicStats(topicConfig.topic
-                                , Helpers.fetchAssignments(tr, topicConfig.assignments)
+                                , Helpers.fetchAssignments(tr, topicConfig.assignments).asMap()
                                 , metric(tr, METRIC_INSERTED)
                                 , metric(tr, METRIC_ACKED)
                                 , metric(tr, METRIC_ACKED_DURATION)

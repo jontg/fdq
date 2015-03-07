@@ -1,8 +1,8 @@
 package com.relateiq.fdq.cli;
 
+import com.alibaba.fastjson.JSON;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.guava.GuavaModule;
 import com.foundationdb.Database;
 import com.foundationdb.FDB;
 import com.relateiq.fdq.Consumer;
@@ -118,7 +118,7 @@ public class FDQCli {
         Database db = fdb.open();
         TopicManager manager = new TopicManager(db, Helpers.createTopicConfig(db, topic));
         ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new GuavaModule());
+
 
         System.out.println(mapper.writeValueAsString(manager.stats()));
     }
