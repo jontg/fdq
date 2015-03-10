@@ -34,9 +34,9 @@ public class QueueTest {
         Multiset<String> rcvd = ConcurrentHashMultiset.create();
 
         log.debug("creating consumers");
-        new Thread(() -> c.createConsumer(TOPIC, "a", e -> rcvd.add(new String(e.message)))).start();
-        new Thread(() -> c.createConsumer(TOPIC, "b", e -> rcvd.add(new String(e.message)))).start();
-        new Thread(() -> c.createConsumer(TOPIC, "c", e -> rcvd.add(new String(e.message)))).start();
+        c.createConsumer(TOPIC, "a", e -> rcvd.add(new String(e.message)));
+        c.createConsumer(TOPIC, "b", e -> rcvd.add(new String(e.message)));
+        c.createConsumer(TOPIC, "c", e -> rcvd.add(new String(e.message)));
 
         log.debug("adding serially");
         long start = System.currentTimeMillis();
@@ -85,9 +85,9 @@ public class QueueTest {
         TopicManager m = new TopicManager(db, p.topicConfig);
 
         log.debug("creating consumers");
-        new Thread(() -> c.createConsumer(TOPIC, "a", e -> e.toString())).start();
-        new Thread(() -> c.createConsumer(TOPIC, "b", e -> e.toString())).start();
-        new Thread(() -> c.createConsumer(TOPIC, "c", e -> e.toString())).start();
+        c.createConsumer(TOPIC, "a", e -> e.toString());
+        c.createConsumer(TOPIC, "b", e -> e.toString());
+        c.createConsumer(TOPIC, "c", e -> e.toString());
 
         log.debug("deactivating");
         m.deactivate();
@@ -137,9 +137,9 @@ public class QueueTest {
         TopicManager m = new TopicManager(db, p.topicConfig);
 
         log.debug("creating consumers");
-        new Thread(() -> c.createConsumer(TOPIC, "a", e -> {
+        c.createConsumer(TOPIC, "a", e -> {
             throw new RuntimeException("asdf");
-        })).start();
+        });
 
         int COUNT = 5;
         List<MessageRequest> reqs = IntStream.range(0, COUNT).mapToObj(i -> new MessageRequest("" + i, ("qwerty " + i).getBytes())).collect(toList());

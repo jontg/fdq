@@ -1,6 +1,5 @@
 package com.relateiq.fdq.cli;
 
-import com.alibaba.fastjson.JSON;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.foundationdb.Database;
@@ -40,7 +39,7 @@ public class FDQCli {
         PRODUCE, PRODUCE_RANDOM, CONSUME, STATUS, DEACTIVATE, ACTIVATE, NUKE
     };
 
-    public static void main(String[] args) throws JsonProcessingException {
+    public static void main(String[] args)  {
         ArgumentParser parser = ArgumentParsers.newArgumentParser("fdq");
 //        parser.addArgument("--foo").action(Arguments.storeTrue()).help("foo help");
         Subparsers subparsers = parser.addSubparsers().help("sub-command help");
@@ -113,14 +112,19 @@ public class FDQCli {
         manager.nuke();
     }
 
-    private static void status(String topic) throws JsonProcessingException {
+    private static void status(String topic)  {
         FDB fdb = FDB.selectAPIVersion(300);
         Database db = fdb.open();
         TopicManager manager = new TopicManager(db, Helpers.createTopicConfig(db, topic));
         ObjectMapper mapper = new ObjectMapper();
 
 
-        System.out.println(mapper.writeValueAsString(manager.stats()));
+        try {
+            System.out.println(mapper.writeValueAsString(manager.stats()));
+        } catch (JsonProcessingException e) {
+            System.out.println("error parsing stats:");
+            e.printStackTrace();
+        }
     }
 
     private static void produceRandom(String topic) {

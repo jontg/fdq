@@ -22,6 +22,8 @@ public class TopicStats {
     public final Map<String, Collection<Integer>> assignments;
     public final long errored_duration_avg;
     public final long acked_duration_avg;
+    public final long backlog;
+    public final long backlog_minutes;
 
 
     public TopicStats(String name, Map<String, Collection<Integer>> assignments
@@ -45,6 +47,8 @@ public class TopicStats {
         this.timed_out = timed_out;
         this.popped = popped;
         this.running = popped - acked;
+        this.backlog = inserted - popped;
+        this.backlog_minutes = acked_duration_avg == 0 ? 0 : (backlog / acked_duration_avg) / (1000 * 60);
     }
 
     @Override
