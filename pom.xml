@@ -26,7 +26,6 @@
     <modules>
         <module>core</module>
         <module>cli</module>
-        <module>serialization-fastjson</module>
     </modules>
 
     <!-- Include common dependencies here -->
