@@ -141,8 +141,8 @@ public class Helpers {
 
     static ThreadPoolExecutor createExecutor() {
         // TODO: configurable # of executors
-        return new ThreadPoolExecutor(ConsumerConfig.DEFAULT_NUM_EXECUTORS, ConsumerConfig.DEFAULT_NUM_EXECUTORS,
+        return new ThreadPoolExecutor(TopicConsumer.DEFAULT_NUM_EXECUTORS, TopicConsumer.DEFAULT_NUM_EXECUTORS,
                 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(Consumer.EXECUTOR_QUEUE_SIZE));
+                new LinkedBlockingQueue<>(TopicConsumer.EXECUTOR_QUEUE_SIZE));
     }
 }

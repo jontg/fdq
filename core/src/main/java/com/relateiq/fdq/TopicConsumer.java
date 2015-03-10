@@ -10,6 +10,7 @@ import com.foundationdb.directory.DirectorySubspace;
 import com.foundationdb.tuple.Tuple;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,8 +20,10 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 import static com.relateiq.fdq.Helpers.bytesToMillis;
 import static com.relateiq.fdq.Helpers.currentTimeMillisAsBytes;
@@ -36,29 +39,45 @@ import static com.relateiq.fdq.TopicConfig.METRIC_TIMED_OUT;
  * Created by mbessler on 2/6/15.
  */
 public class TopicConsumer {
-    public static final Logger log = LoggerFactory.getLogger(TopicConsumer.class);
+    private static final Logger log = LoggerFactory.getLogger(TopicConsumer.class);
+
     public static final int EXECUTOR_QUEUE_SIZE = 1000;
+    public static final int DEFAULT_NUM_EXECUTORS = 50;
     public static final int HEARTBEAT_MILLIS = 2000;
+
     private final Database db;
     private final TopicConfig topicConfig;
-    private final ConsumerConfig consumerConfig;
+    private final String name;
+    private final java.util.function.Consumer<Envelope> consumer;
+    private final ExecutorService executorOuter;
+    private final ExecutorService executorInner;
+    private final int numExecutors = DEFAULT_NUM_EXECUTORS;
 
-    public TopicConsumer(Database db, ConsumerConfig consumerConfig) {
+    private Map<Integer, Thread> shardThreads = Maps.newHashMap();
+
+    private long sleepMillisBetweenBatches = 0;
+    private int batchSize = 100;
+    private long sleepMillisOnAllSkipped = 1000;
+
+    public TopicConsumer(Database db, TopicConfig topicConfig, String consumerName, Consumer<Envelope> consumer) {
         this.db = db;
-        this.consumerConfig = consumerConfig;
-        this.topicConfig = consumerConfig.topicConfig;
+        this.executorInner = Helpers.createExecutor();
+        this.executorOuter = Helpers.createExecutor();
+        this.topicConfig = topicConfig;
+        this.name = consumerName;
+        this.consumer = consumer;
 
         // start heartbeat thread
         new Thread(() -> {
             while (true) {
                 if (log.isTraceEnabled()) {
-                    log.trace("heartbeat " + consumerConfig.toString());
+                    log.trace("heartbeat " + toString());
                 }
                 heartbeat();
                 try {
                     Thread.sleep(HEARTBEAT_MILLIS);
                 } catch (InterruptedException e) {
-                    log.info("heartbeat interrupted, closing consumerConfig=" + consumerConfig);
+                    log.info("heartbeat interrupted, closing consumerConfig=" + toString());
                     break;
                 }
             }
@@ -98,14 +117,14 @@ public class TopicConsumer {
     private void ensureShardThreads(Collection<Integer> shards) {
         // ensure consumers for each of our shards
         for (Integer shard : shards) {
-            Thread thread = consumerConfig.shardThreads.get(shard);
+            Thread thread = shardThreads.get(shard);
             if (thread != null && thread.isAlive()) {
                 continue;
             }
 
             final int finalI = shard;
 
-            log.info("Starting thread for " + consumerConfig.toString() + " shard="  + shard);
+            log.info("Starting thread for " + toString() + " shard="  + shard);
             thread = new Thread(() -> {
                 try {
                     //noinspection StatementWithEmptyBody
@@ -114,12 +133,12 @@ public class TopicConsumer {
                 } catch (Exception e) {
                     log.error("error consuming", e);
                 }
-                consumerConfig.shardThreads.remove(shard);
-                log.info("Shutting down consumer shard thread topic=" + topicConfig.topic + " consumeName=" + consumerConfig.name + " shardIndex=" + shard);
+                shardThreads.remove(shard);
+                log.info("Shutting down consumer shard thread topic=" + topicConfig.topic + " consumeName=" + name + " shardIndex=" + shard);
             });
 //            consumeShardAsync(consumerConfig, finalI);
 
-            consumerConfig.shardThreads.put(shard, thread);
+            shardThreads.put(shard, thread);
             thread.start();
             // add thread shutdown hook to remove it
         }
@@ -145,8 +164,8 @@ public class TopicConsumer {
             ImmutableSet.Builder<String> liveConsumersB = ImmutableSet.builder();
             for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(tc.heartbeats.pack()))) {
                 String consumerName = tc.heartbeats.unpack(keyValue.getKey()).getString(0);
-                if (consumerName.equals(consumerConfig.name)) {
-                    liveConsumersB.add(consumerConfig.name);
+                if (consumerName.equals(name)) {
+                    liveConsumersB.add(name);
                     continue;
                 }
                 long millis = bytesToMillis(keyValue.getValue());
@@ -173,7 +192,7 @@ public class TopicConsumer {
             Multimap<String, Integer> newAssignments = removeConsumers(tr, removedConsumers, originalAssignments);
 
             // ensure our consumer is added
-            newAssignments = Divvy.addConsumer(newAssignments, consumerConfig.name, tc.numShards);
+            newAssignments = Divvy.addConsumer(newAssignments, name, tc.numShards);
 
             boolean isAssignmentsUpdated = !newAssignments.equals(originalAssignments);
             if (isAssignmentsUpdated) {
@@ -181,7 +200,7 @@ public class TopicConsumer {
             }
 
             // update our timestamp
-            tr.set(tc.heartbeats.pack(consumerConfig.name), currentTimeMillisAsBytes());
+            tr.set(tc.heartbeats.pack(name), currentTimeMillisAsBytes());
 
             // check for de/activation
             boolean isActivated = Helpers.isActivated(tr, tc);
@@ -190,7 +209,7 @@ public class TopicConsumer {
         });
 
         if (result.isActivated) {
-            ensureShardThreads(result.assignments.get(consumerConfig.name));
+            ensureShardThreads(result.assignments.get(name));
         }
 
         if (result.isAssignmentsUpdated) {
@@ -238,7 +257,7 @@ public class TopicConsumer {
             int numSkipped = 0;
             int numErrored = 0;
 
-            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()), consumerConfig.batchSize)) {
+            for (KeyValue keyValue : tr.snapshot().getRange(Range.startsWith(dataDir.pack()), batchSize)) {
                 try {
 
                     // Deserialize key
@@ -285,17 +304,17 @@ public class TopicConsumer {
             tc.incMetric(tr, METRIC_SKIPPED, numSkipped);
             // this type of deser error is an internal error and very unexpected, not incrementing error metric, thats for consumer function errors
 
-            if (numPopped < consumerConfig.batchSize && numSkipped == 0 && numErrored == 0) {
+            if (numPopped < batchSize && numSkipped == 0 && numErrored == 0) {
                 // exhausted
                 byte[] topicWatchKey = tc.shardMetric(shardIndex, TopicConfig.METRIC_INSERTED);
                 return new ConsumeWorkResult(tr.watch(topicWatchKey), result, true);
             }
 
-            if (numPopped + numErrored == 0 && numSkipped == consumerConfig.batchSize) {
+            if (numPopped + numErrored == 0 && numSkipped == batchSize) {
                 // TODO: pop some more next time so we don't keep spinning on these
-                log.warn("Whole batch was skipped for " + consumerConfig.toString());
+                log.warn("Whole batch was skipped for " + toString());
                 try {
-                    Thread.sleep(consumerConfig.sleepMillisOnAllSkipped);
+                    Thread.sleep(sleepMillisOnAllSkipped);
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
@@ -312,20 +331,20 @@ public class TopicConsumer {
 
         for (Envelope envelope : workResult.fetched) {
             if (log.isTraceEnabled()) {
-                log.trace("Submitting to executor " + consumerConfig.toString() + " " + envelope.toString());
+                log.trace("Submitting to executor " + toString() + " " + envelope.toString());
             }
 
-            consumerConfig.executorOuter.submit(() -> consumeEnvelope(envelope));
+            executorOuter.submit(() -> consumeEnvelope(envelope));
         }
 
         if (workResult.watch != null) {
-            log.debug("Exhausted queue, watching, topic=" + consumerConfig.toString() + " shardIndex=" + shardIndex);
+            log.debug("Exhausted queue, watching, topic=" + toString() + " shardIndex=" + shardIndex);
             workResult.watch.get();
         } else {
             //optionally sleep
-            if (consumerConfig.sleepMillisBetweenBatches != 0) {
+            if (sleepMillisBetweenBatches != 0) {
                 try {
-                    Thread.sleep(consumerConfig.sleepMillisBetweenBatches);
+                    Thread.sleep(sleepMillisBetweenBatches);
                 } catch (InterruptedException e) {
                     return false;
                 }
@@ -342,13 +361,13 @@ public class TopicConsumer {
         try {
             long start = System.currentTimeMillis();
 
-            java.util.concurrent.Future<?> task = consumerConfig.executorInner.submit(() -> consumerConfig.consumer.accept(envelope));
+            java.util.concurrent.Future<?> task = executorInner.submit(() -> consumer.accept(envelope));
             task.get(5, TimeUnit.SECONDS);
 
             duration = System.currentTimeMillis() - start;
         } catch (TimeoutException e) {
             isTimedOut = true;
-            log.warn("timed out " + consumerConfig.toString() + " " + envelope.toString());
+            log.warn("timed out " + toString() + " " + envelope.toString());
         } catch (Exception e) {
             log.error("error during consume, put in errored data folder", e);
             exception = e;
@@ -387,7 +406,7 @@ public class TopicConsumer {
 
     private boolean isMine(Transaction tr, Integer shardIndex) {
         return fetchAssignment(tr, shardIndex)
-                .filter(consumerConfig.name::equals).isPresent();
+                .filter(name::equals).isPresent();
     }
 
     private static class ConsumeWorkResult {

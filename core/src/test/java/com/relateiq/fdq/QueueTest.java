@@ -112,7 +112,7 @@ public class QueueTest {
                 break;
             }
             Thread.sleep(10);
-            if ((System.currentTimeMillis() - start) > Consumer.HEARTBEAT_MILLIS * 2) {
+            if ((System.currentTimeMillis() - start) > TopicConsumer.HEARTBEAT_MILLIS * 2) {
                 log.debug("timed out waiting");
                 break;
             }
